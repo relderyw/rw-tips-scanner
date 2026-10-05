@@ -497,6 +497,7 @@ def update_telegram_signal_result(
 
 
 @app.get("/health")
+@app.get("/app-health")
 def health(session: UserSession = Depends(require_iq_session)):
     return session.collector.health_snapshot()
 
@@ -588,7 +589,7 @@ async def websocket_endpoint(ws: WebSocket):
     # 1) Aceita upgrade.
     origin_ok = True
     origin = ws.headers.get("origin")
-    if origin and config.CORS_ORIGINS:
+    if origin and config.CORS_ORIGINS and "*" not in config.CORS_ORIGINS:
         origin_ok = any(o.strip("/") == origin.strip("/") for o in config.CORS_ORIGINS)
     if not origin_ok:
         log.info("WS upgrade rejeitado: CORS origin=%s não permitido.", origin)

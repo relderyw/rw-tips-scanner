@@ -104,4 +104,4 @@ export async function createAdminUser({ email, password, days }) {
   return payload;
 }
 export const fetchBridgePayouts = () => request('/payouts');
-export const fetchBridgeHealth = () => request('/health');
+export const fetchBridgeHealth = () => request('/app-health').catch(() => request('/health'));
