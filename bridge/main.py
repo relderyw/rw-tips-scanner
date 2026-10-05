@@ -304,12 +304,13 @@ async def _session_expiry_loop():
 # ===================================================================
 app = FastAPI(title="RW TIPS Bridge (tempo real IQ Option)", lifespan=lifespan)
 
-# CORS: apenas origens permitidas. WebSocket upgrade respeita Origin.
+# CORS irrestrito para suportar acessos via Vercel e outros domínios
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
