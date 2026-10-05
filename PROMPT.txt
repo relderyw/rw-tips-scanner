@@ -1,0 +1,1335 @@
+Catálogo operacional completo — RW TIPS
+1. Estratégias de candles
+
+Para padronizar o scanner, usaremos M1 como timeframe-base para as estratégias de sequência, salvo indicação diferente. As entradas serão feitas na abertura da vela seguinte ao reconhecimento do padrão, com expiração de uma vela. Quando uma estratégia exigir um ciclo fixo, ele estará especificado.
+
+As regras identificadas como variantes propostas são especificações executáveis para o RW TIPS, não necessariamente as regras tradicionais ensinadas por todos os operadores.
+
+1. MHI 1 — Minoria em bloco de 5 minutos
+Já implementada
+
+Timeframe: M1; ciclo fixo de 5 minutos.
+
+Regra: contar as cores das três primeiras velas fechadas. Duas CALL e uma PUT geram sinal PUT; duas PUT e uma CALL geram CALL.
+
+Entrada: abertura da quarta vela.
+
+Expiração: fechamento da quarta vela.
+
+Cancelamento: doji, lacuna, referência incompleta ou bloco desalinhado.
+
+Prós: regra simples, ciclo claro e fácil validação.
+
+Contras: não considera tendência, volatilidade ou contexto de mercado.
+
+2. MHI 2 — Variante de minoria com quatro referências
+Variante proposta
+
+Timeframe: M1; ciclo de 5 minutos.
+
+Regra: analisar as quatro primeiras velas fechadas do bloco. Se houver três CALL e uma PUT, sinalizar PUT. Se houver três PUT e uma CALL, sinalizar CALL.
+
+Entrada: abertura da quinta vela.
+
+Expiração: fechamento da quinta vela.
+
+Cancelamento: empate 2 × 2, doji, falha de dados ou bloco incompleto.
+
+Exemplo: CALL, CALL, PUT, CALL → PUT.
+
+Prós: regra objetiva e mais referências que a MHI 1.
+
+Contras: gera menos sinais e pode entrar contra uma tendência forte.
+
+Observação: esta é uma variação matemática proposta, não uma definição universal da MHI 2.
+
+3. MHI 3 — Minoria com janela móvel de três velas
+Variante proposta
+
+Timeframe: M1; janela móvel.
+
+Regra: a cada fechamento, observar as três últimas velas completas. Entrar na direção oposta à maioria quando houver distribuição 2 × 1.
+
+Entrada: abertura da próxima vela.
+
+Expiração: uma vela.
+
+Cancelamento: doji ou dados inválidos.
+
+Exemplo: PUT, PUT, CALL → CALL.
+
+Prós: não depende de ciclos fixos e permite analisar o histórico continuamente.
+
+Contras: sinais sobrepostos e maior frequência de operações correlacionadas.
+
+Observação: não equivale necessariamente à MHI 3 de materiais externos.
+
+4. MHI Maioria — Continuidade da maioria
+Regra proposta objetiva
+
+Timeframe: M1; ciclo fixo de 5 minutos.
+
+Regra: contar as três primeiras velas do bloco. Duas CALL e uma PUT geram CALL; duas PUT e uma CALL geram PUT.
+
+Entrada: abertura da quarta vela.
+
+Expiração: uma vela.
+
+Cancelamento: doji, empate ou bloco incompleto.
+
+Exemplo: PUT, CALL, PUT → PUT.
+
+Prós: simples e permite comparar diretamente com MHI 1.
+
+Contras: a maioria das velas anteriores não garante continuidade.
+
+5. Torres Gêmeas — Duas velas direcionais consecutivas
+Variante proposta
+
+Timeframe: M1 ou M5.
+
+Regra: identificar duas velas consecutivas da mesma direção, com corpos de pelo menos 50% da amplitude total e sem dojis.
+
+Entrada: abertura da terceira vela, na mesma direção das duas anteriores.
+
+Expiração: uma vela.
+
+Cancelamento: corpo abaixo do limite, doji ou ausência de dados.
+
+Exemplo: duas CALL com corpos válidos → sinal CALL.
+
+Prós: regra mensurável, fácil de visualizar e automatizar.
+
+Contras: pode entrar após movimento já estendido.
+
+Observação: é uma definição operacional proposta; o nome Torres Gêmeas tem variações e precisa de confirmação para representar uma versão tradicional.
+
+6. Five Flip — Inversão após cinco velas
+Variante proposta
+
+Timeframe: M1.
+
+Regra: observar as últimas cinco velas fechadas. Se as cinco forem da mesma direção, sinalizar na direção contrária.
+
+Entrada: abertura da sexta vela.
+
+Expiração: uma vela.
+
+Cancelamento: doji ou sequência com menos de cinco velas válidas.
+
+Exemplo: CALL, CALL, CALL, CALL, CALL → PUT.
+
+Prós: regra simples, boa para estudar reversões após sequências.
+
+Contras: sequências longas podem continuar; baixa frequência em algumas condições.
+
+Observação: não presumir que esta seja a versão tradicional do Five Flip.
+
+7. Seven Flip — Inversão após sete velas
+Variante proposta
+
+Timeframe: M1.
+
+Regra: identificar sete velas consecutivas de alta ou baixa.
+
+Entrada: direção contrária à sequência, na abertura da oitava vela.
+
+Expiração: uma vela.
+
+Cancelamento: doji ou quebra da sequência.
+
+Exemplo: sete PUT consecutivas → CALL.
+
+Prós: identifica movimentos prolongados e é simples de testar.
+
+Contras: padrões raros; reversão não é obrigatória após uma sequência longa.
+
+8. Três Vizinhos — Continuidade de três velas
+Variante proposta
+
+Timeframe: M1 ou M5.
+
+Regra: identificar três velas consecutivas da mesma direção.
+
+Entrada: abertura da quarta vela, na mesma direção.
+
+Expiração: uma vela.
+
+Cancelamento: qualquer doji ou vela de direção contrária.
+
+Exemplo: CALL, CALL, CALL → CALL.
+
+Prós: simples, com critérios fáceis de auditar.
+
+Contras: pode gerar entrada atrasada e sofrer em reversões bruscas.
+
+9. Milhão — Maioria em janela de seis velas
+Variante proposta
+
+Timeframe: M1; ciclo de 6 minutos.
+
+Regra: analisar seis velas fechadas. Se quatro ou mais forem CALL, sinalizar CALL. Se quatro ou mais forem PUT, sinalizar PUT.
+
+Entrada: abertura da sétima vela.
+
+Expiração: uma vela.
+
+Cancelamento: doji em qualquer referência ou empate.
+
+Exemplo: quatro CALL e duas PUT → CALL.
+
+Prós: considera mais observações do que uma janela de três velas.
+
+Contras: janela maior pode misturar movimentos de mercado diferentes.
+
+Observação: o nome Milhão não identifica uma regra única. Esta é uma versão própria para teste.
+
+10. Triplicação — Três velas na mesma direção
+Regra objetiva proposta
+
+Timeframe: M1.
+
+Regra: detectar três velas consecutivas da mesma direção.
+
+Entrada: abertura da quarta vela, na direção da sequência.
+
+Expiração: uma vela.
+
+Cancelamento: doji ou quebra da sequência.
+
+Exemplo: PUT, PUT, PUT → PUT.
+
+Prós: fácil de automatizar e analisar por ativo.
+
+Contras: pode confundir continuidade com exaustão.
+
+11. Não Triplicação — Quebra da sequência de duas velas
+Regra objetiva proposta
+
+Timeframe: M1.
+
+Regra: identificar duas velas consecutivas da mesma direção.
+
+Entrada: na abertura da terceira vela, na direção contrária.
+
+Expiração: uma vela.
+
+Cancelamento: doji ou quebra da sequência antes da entrada.
+
+Exemplo: CALL, CALL → PUT.
+
+Prós: contraponto direto à estratégia de continuidade.
+
+Contras: não há garantia de que a terceira vela inverterá a direção.
+
+Observação: o nome pode representar outras regras em materiais externos.
+
+12. Intercalação — Alternância de cores
+Regra objetiva proposta
+
+Timeframe: M1.
+
+Regra: identificar quatro velas alternadas: CALL, PUT, CALL, PUT ou PUT, CALL, PUT, CALL.
+
+Entrada: na abertura da quinta vela, na direção da quarta vela.
+
+Expiração: uma vela.
+
+Cancelamento: doji ou quebra da alternância.
+
+Exemplo: CALL, PUT, CALL, PUT → PUT.
+
+Prós: padrão visual claro e fácil de catalogar.
+
+Contras: a alternância passada não implica que ela continuará.
+
+2. Padrões específicos
+
+Nesta família, alguns nomes não têm uma definição pública única. As regras abaixo são variantes matemáticas propostas para o catálogo, e não alegações de que correspondem às estratégias originais de algum autor.
+
+Nº
+
+	
+
+Estratégia
+
+	
+
+Timeframe
+
+	
+
+Regra de identificação
+
+	
+
+Entrada e expiração
+
+	
+
+Cancelamento
+
+
+
+
+13
+
+	
+
+R7
+
+	
+
+M1
+
+	
+
+Identificar sete velas; comparar a quantidade de CALL e PUT. Maioria de pelo menos 5 determina a direção.
+
+	
+
+Próxima vela, 1 candle
+
+	
+
+Doji ou empate sem maioria mínima
+
+
+
+
+14
+
+	
+
+Padrão 23
+
+	
+
+M1
+
+	
+
+Analisar a segunda e a terceira vela de um bloco de 5. Se forem da mesma direção, seguir essa direção.
+
+	
+
+Quarta vela, 1 candle
+
+	
+
+Doji ou direções diferentes
+
+
+
+
+15
+
+	
+
+Padrão 3×1
+
+	
+
+M1
+
+	
+
+Três velas consecutivas da mesma direção, seguidas de uma vela contrária.
+
+	
+
+Quinta vela, na direção da sequência inicial, 1 candle
+
+	
+
+Doji ou ausência da quarta vela contrária
+
+
+
+
+16
+
+	
+
+Padrão Ímpar
+
+	
+
+M1
+
+	
+
+Analisar as posições 1, 3 e 5 de um bloco de 5. A maioria dessas três posições define a direção.
+
+	
+
+Sexta vela, 1 candle
+
+	
+
+Doji nas posições analisadas ou empate
+
+
+
+
+17
+
+	
+
+Quinto Elemento
+
+	
+
+M1
+
+	
+
+Identificar a direção predominante das quatro primeiras velas. A quinta vela é a referência de confirmação: se estiver na mesma direção, sinalizar continuidade.
+
+	
+
+Sexta vela, 1 candle
+
+	
+
+Empate nas quatro referências ou quinta vela contrária
+
+
+
+
+18
+
+	
+
+Três Mosqueteiros
+
+	
+
+M1
+
+	
+
+Três velas consecutivas com corpos válidos, na mesma direção, e cada fechamento acima do fechamento anterior em CALL ou abaixo em PUT.
+
+	
+
+Quarta vela, 1 candle
+
+	
+
+Doji ou fechamento que não progride
+
+
+
+
+19
+
+	
+
+Twin Candle
+
+	
+
+M1
+
+	
+
+Duas velas consecutivas de direções opostas, com corpos de tamanho semelhante (diferença máxima de 10%).
+
+	
+
+Terceira vela, na direção da segunda, 1 candle
+
+	
+
+Doji ou corpos fora da tolerância
+
+
+
+
+20
+
+	
+
+Mirror
+
+	
+
+M1
+
+	
+
+Comparar duas sequências consecutivas de três velas. A segunda sequência deve repetir as direções da primeira em ordem inversa.
+
+	
+
+Próxima vela, na direção da última vela da segunda sequência, 1 candle
+
+	
+
+Sequências diferentes ou dojis
+
+
+
+
+21
+
+	
+
+Wolf
+
+	
+
+M1
+
+	
+
+Identificar três velas consecutivas com máximas e mínimas crescentes para CALL, ou decrescentes para PUT.
+
+	
+
+Quarta vela, na direção da estrutura, 1 candle
+
+	
+
+Falta de progressão ou doji
+
+
+
+
+22
+
+	
+
+Garra
+
+	
+
+M1
+
+	
+
+Identificar uma vela central de direção oposta, cercada por duas velas da mesma direção.
+
+	
+
+Quarta vela, na direção das velas externas, 1 candle
+
+	
+
+Doji ou ausência da estrutura
+
+
+
+
+23
+
+	
+
+Três Irmãos
+
+	
+
+M1
+
+	
+
+Três velas consecutivas na mesma direção, com corpos entre 40% e 80% da amplitude e fechamentos progressivos.
+
+	
+
+Quarta vela, 1 candle
+
+	
+
+Doji, corpo fora do intervalo ou falta de progressão
+
+
+
+
+24
+
+	
+
+Três Pares
+
+	
+
+M1
+
+	
+
+Analisar três pares consecutivos. Cada par deve ter duas velas da mesma direção. Os três pares precisam apontar para a mesma direção.
+
+	
+
+Sétima vela, 1 candle
+
+	
+
+Qualquer par divergente ou doji
+
+Detalhamento dos padrões
+
+13. R7
+
+Prós: janela maior, reduz o peso de uma única vela e permite estudar a força direcional.
+
+Contras: pode gerar sinais atrasados e depende de uma sequência relativamente longa.
+
+Exemplo: CALL, CALL, PUT, CALL, CALL, PUT, CALL. São cinco CALL e duas PUT; sinal CALL na próxima vela.
+
+Importante: essa regra é uma proposta de maioria em sete velas. É necessário confirmar se corresponde ao R7 que você deseja catalogar.
+
+14. Padrão 23
+
+Prós: usa poucas velas e tem identificação simples.
+
+Contras: depende de apenas duas referências e pode produzir muitos sinais sem contexto.
+
+Exemplo: bloco com CALL, PUT, PUT, CALL, PUT. As posições 2 e 3 são PUT; o sinal é PUT na quarta vela, respeitando o ciclo definido.
+
+Observação: como a quarta vela está dentro do bloco, para evitar antecipação, a implementação deve registrar a entrada somente após o fechamento da terceira vela e antes da abertura da quarta.
+
+15. Padrão 3×1
+
+Prós: permite comparar exaustão e continuidade depois de uma correção.
+
+Contras: o padrão pode ocorrer em tendências fortes e a correção não garante retomada.
+
+Exemplo: CALL, CALL, CALL, PUT → sinal CALL na quinta vela.
+
+Observação: variante de retomada após correção, não uma regra universal do padrão 3×1.
+
+16. Padrão Ímpar
+
+Prós: desconsidera as posições pares e possibilita testes de distribuição.
+
+Contras: não considera a ordem completa nem a amplitude dos candles.
+
+Exemplo: posições 1, 3 e 5 são PUT, CALL e PUT; a direção é PUT.
+
+Cancelamento: além de doji, cancelar quando não houver as cinco velas completas.
+
+17. Quinto Elemento
+
+Prós: introduz confirmação antes de gerar o sinal.
+
+Contras: reduz a frequência e pode perder movimentos rápidos.
+
+Exemplo: CALL, CALL, PUT, CALL nas quatro primeiras posições; a quinta é CALL. A maioria inicial é CALL e a quinta confirma CALL.
+
+Observação: regra proposta de confirmação, não uma identificação tradicional confirmada.
+
+18. Três Mosqueteiros
+
+Prós: exige progressão de preço, além da cor das velas.
+
+Contras: pode selecionar movimentos já estendidos.
+
+Exemplo: três velas CALL com fechamentos sucessivamente maiores, corpos dentro dos limites definidos e sem doji → CALL.
+
+Parâmetros: corpo mínimo de 40% e máximo de 80% da amplitude de cada vela.
+
+19. Twin Candle
+
+Prós: utiliza um padrão comparável e facilmente visualizável.
+
+Contras: a semelhança dos corpos não representa necessariamente uma reversão ou continuidade.
+
+Exemplo: uma vela CALL com corpo de 10 pontos, seguida de uma PUT com corpo de 10,5 pontos. A regra proposta segue a segunda vela.
+
+Parâmetro: tolerância de 10% no tamanho dos corpos.
+
+20. Mirror
+
+Prós: permite investigar repetições e simetrias em sequências curtas.
+
+Contras: padrões específicos podem ter poucas ocorrências.
+
+Exemplo: primeira sequência CALL, PUT, CALL; segunda sequência CALL, PUT, CALL não corresponde à inversão da primeira, enquanto CALL, PUT, CALL invertida permanece igual por simetria. Para evitar ambiguidade, o algoritmo deve comparar explicitamente os vetores.
+
+Regra computacional: segunda[0..2] == reverse(primeira[0..2]).
+
+Atenção: a regra de entrada precisa ser identificada separadamente da detecção da simetria.
+
+21. Wolf
+
+Prós: utiliza estrutura de máximas e mínimas, não apenas cores.
+
+Contras: pequenas diferenças de preço podem mudar a classificação; exige dados consistentes.
+
+Exemplo CALL: máxima 1, máxima 2 e máxima 3 crescentes e mínimas também crescentes.
+
+Exemplo PUT: máximas e mínimas decrescentes.
+
+Cancelamento: estruturas mistas ou máximas/mínimas iguais, considerando a precisão do ativo.
+
+22. Garra
+
+Prós: padrão curto e objetivo.
+
+Contras: uma vela isolada pode não representar rejeição real.
+
+Exemplo: CALL, PUT, CALL → sinal CALL na quarta vela.
+
+Regra adicional: a vela central precisa fechar em direção contrária às duas externas; não há exigência de tamanho específico do pavio nesta variante.
+
+23. Três Irmãos
+
+Prós: filtra velas muito pequenas e movimentos sem progressão.
+
+Contras: os limites de tamanho são parâmetros de projeto e podem precisar de calibração.
+
+Exemplo: três velas CALL com corpos de 55%, 60% e 65% da amplitude, com fechamentos crescentes → CALL.
+
+Cancelamento: qualquer candle fora do intervalo de corpo de 40% a 80%.
+
+24. Três Pares
+
+Prós: permite estudar persistência direcional em seis candles.
+
+Contras: baixa frequência e alta dependência da janela escolhida.
+
+Exemplo: CALL/CALL, PUT/PUT, CALL/CALL → sem sinal, porque os pares divergem.
+
+Sinal válido: CALL/CALL, CALL/CALL, CALL/CALL → CALL na sétima vela.
+
+3. Price Action — estratégias com suporte, resistência e tendência
+
+Para essas estratégias, o timeframe-base será M5, com parâmetros de estrutura ajustáveis. As entradas serão sempre feitas após o fechamento da vela de confirmação, evitando utilizar informações futuras.
+
+Nº
+
+	
+
+Estratégia
+
+	
+
+Timeframe
+
+	
+
+Regra de identificação
+
+	
+
+Entrada e expiração
+
+	
+
+Cancelamento
+
+
+
+
+25
+
+	
+
+Engolfo de alta
+
+	
+
+M5
+
+	
+
+Vela de baixa seguida por vela de alta cujo corpo envolve o corpo anterior.
+
+	
+
+CALL na vela seguinte, 1 candle
+
+	
+
+Corpo não envolve o anterior
+
+
+
+
+26
+
+	
+
+Engolfo de baixa
+
+	
+
+M5
+
+	
+
+Vela de alta seguida por vela de baixa cujo corpo envolve o corpo anterior.
+
+	
+
+PUT na vela seguinte, 1 candle
+
+	
+
+Corpo não envolve o anterior
+
+
+
+
+27
+
+	
+
+Martelo em suporte
+
+	
+
+M5
+
+	
+
+Martelo com pavio inferior longo, corpo pequeno e suporte confirmado.
+
+	
+
+CALL após confirmação, 1 candle
+
+	
+
+Ausência de suporte ou pavio insuficiente
+
+
+
+
+28
+
+	
+
+Estrela cadente em resistência
+
+	
+
+M5
+
+	
+
+Vela com pavio superior longo, corpo pequeno e resistência confirmada.
+
+	
+
+PUT após confirmação, 1 candle
+
+	
+
+Ausência de resistência ou pavio insuficiente
+
+
+
+
+29
+
+	
+
+Pullback de tendência
+
+	
+
+M5
+
+	
+
+Tendência confirmada, correção contra a tendência e candle de retomada.
+
+	
+
+Na direção da tendência, 1 candle
+
+	
+
+Estrutura da tendência rompida
+
+
+
+
+30
+
+	
+
+Rompimento de resistência
+
+	
+
+M5
+
+	
+
+Fechamento acima da máxima de resistência definida por janela anterior.
+
+	
+
+CALL após rompimento, 1 candle
+
+	
+
+Fechamento não confirma rompimento
+
+
+
+
+31
+
+	
+
+Rompimento de suporte
+
+	
+
+M5
+
+	
+
+Fechamento abaixo da mínima de suporte definida por janela anterior.
+
+	
+
+PUT após rompimento, 1 candle
+
+	
+
+Fechamento não confirma rompimento
+
+
+
+
+32
+
+	
+
+Breakout com reteste
+
+	
+
+M5
+
+	
+
+Rompimento confirmado, retorno ao nível rompido e rejeição a favor do rompimento.
+
+	
+
+Na direção do rompimento, 1 candle
+
+	
+
+Reteste não ocorre dentro da janela
+
+
+
+
+33
+
+	
+
+Rejeição de suporte
+
+	
+
+M5
+
+	
+
+Preço toca zona de suporte e fecha acima dela com pavio inferior significativo.
+
+	
+
+CALL após confirmação, 1 candle
+
+	
+
+Fechamento abaixo do suporte
+
+
+
+
+34
+
+	
+
+Rejeição de resistência
+
+	
+
+M5
+
+	
+
+Preço toca zona de resistência e fecha abaixo dela com pavio superior significativo.
+
+	
+
+PUT após confirmação, 1 candle
+
+	
+
+Fechamento acima da resistência
+
+Parâmetros matemáticos sugeridos
+
+25 e 26. Engolfo de alta e de baixa
+
+Engolfo de alta: candle anterior de baixa; candle atual de alta; abertura atual menor ou igual ao fechamento anterior e fechamento atual maior ou igual à abertura anterior.
+
+Engolfo de baixa: condições inversas.
+
+Exigir corpos diferentes de zero.
+
+Não exigir que a amplitude total envolva os pavios; o critério é o corpo.
+
+Prós: padrão facilmente detectável e com critérios objetivos.
+
+Contras: pode gerar sinais em regiões sem relevância técnica.
+
+27. Martelo em suporte
+
+Calcular o suporte pela menor mínima das últimas 20 velas fechadas anteriores à formação do padrão.
+
+Tolerância de aproximação: 0,1% do preço.
+
+Pavio inferior maior ou igual a duas vezes o corpo.
+
+Pavio superior menor ou igual ao corpo.
+
+Fechamento na metade superior da amplitude.
+
+Sinal CALL na vela seguinte.
+
+Prós: combina padrão de candle e região de preço.
+
+Contras: a definição de suporte por janela fixa é uma aproximação e pode não refletir zonas técnicas relevantes.
+
+28. Estrela cadente em resistência
+
+Calcular resistência pela maior máxima das últimas 20 velas fechadas anteriores à formação.
+
+Mesma tolerância de 0,1%.
+
+Pavio superior maior ou igual a duas vezes o corpo.
+
+Pavio inferior menor ou igual ao corpo.
+
+Fechamento na metade inferior da amplitude.
+
+Sinal PUT na vela seguinte.
+
+Prós: regra simétrica ao martelo e simples de validar.
+
+Contras: pode detectar pavios causados por volatilidade aleatória.
+
+29. Pullback de tendência
+
+Usar EMA 9 e EMA 21.
+
+Tendência de alta: EMA 9 acima da EMA 21, com ambas inclinadas positivamente nas últimas três velas.
+
+Tendência de baixa: EMA 9 abaixo da EMA 21, com ambas inclinadas negativamente.
+
+A correção deve tocar ou cruzar a EMA 9 sem fechar além da EMA 21.
+
+Confirmar retomada com vela fechando na direção da tendência.
+
+Entrada na abertura da vela seguinte.
+
+Expiração de uma vela.
+
+Prós: utiliza direção e correção, evitando operar contra a tendência identificada.
+
+Contras: médias móveis são atrasadas; correções podem evoluir para reversões.
+
+30. Rompimento de resistência
+
+Resistência: maior máxima das 20 velas anteriores, excluindo a vela de sinal.
+
+Rompimento: fechamento acima da resistência por pelo menos um tick.
+
+Entrada CALL na abertura seguinte.
+
+Expiração de uma vela.
+
+Prós: condição objetiva e facilmente reproduzível.
+
+Contras: rompimentos falsos podem gerar perdas rápidas.
+
+31. Rompimento de suporte
+
+Suporte: menor mínima das 20 velas anteriores, excluindo a vela de sinal.
+
+Rompimento: fechamento abaixo do suporte por pelo menos um tick.
+
+Entrada PUT na abertura seguinte.
+
+Expiração de uma vela.
+
+Prós: simétrico ao rompimento de resistência.
+
+Contras: pode sofrer com falsas quebras e retornos rápidos.
+
+32. Breakout com reteste
+
+Identificar rompimento válido pela regra das estratégias 30 ou 31.
+
+Aguardar reteste do nível rompido nas próximas cinco velas.
+
+Tolerância de reteste: 0,1% do preço.
+
+Rompimento de resistência: preço retorna à zona rompida e fecha novamente acima dela.
+
+Rompimento de suporte: preço retorna à zona rompida e fecha novamente abaixo dela.
+
+Entrada na abertura da vela seguinte, na direção do rompimento.
+
+Expiração de uma vela.
+
+Cancelar se não houver reteste dentro de cinco velas ou se o preço fechar claramente do outro lado do nível.
+
+Prós: exige confirmação adicional em relação ao rompimento simples.
+
+Contras: reduz a quantidade de operações e pode perder movimentos sem reteste.
+
+33. Rejeição de suporte
+
+Suporte: mínima das últimas 20 velas anteriores.
+
+A vela de sinal deve alcançar a zona de tolerância de 0,1% do suporte.
+
+Pavio inferior maior ou igual a duas vezes o corpo.
+
+Fechamento acima do suporte.
+
+Entrada CALL na vela seguinte.
+
+Expiração de uma vela.
+
+Prós: combina reação de preço e região técnica.
+
+Contras: pode gerar falsos sinais em suportes que estão prestes a romper.
+
+34. Rejeição de resistência
+
+Resistência: máxima das últimas 20 velas anteriores.
+
+A vela de sinal deve alcançar a zona de tolerância de 0,1% da resistência.
+
+Pavio superior maior ou igual a duas vezes o corpo.
+
+Fechamento abaixo da resistência.
+
+Entrada PUT na vela seguinte.
+
+Expiração de uma vela.
+
+Prós: utiliza rejeição de preço em uma região definida.
+
+Contras: resistência pode ser rompida mesmo após uma rejeição aparente.
+
+4. Parâmetros globais para o motor de backtest
+
+Estas configurações devem ser compartilhadas por todas as estratégias, mas podem ser sobrescritas individualmente quando necessário.
+
+Parâmetro
+
+	
+
+Padrão
+
+	
+
+Configurável
+
+
+
+
+Timeframe de candles
+
+	
+
+M1 ou M5 conforme estratégia
+
+	
+
+Sim
+
+
+
+
+Expiração
+
+	
+
+1 vela
+
+	
+
+Sim
+
+
+
+
+Entrada
+
+	
+
+Abertura da vela após confirmação
+
+	
+
+Sim, conforme regra
+
+
+
+
+Doji
+
+	
+
+Cancela sinais que dependem da direção da vela
+
+	
+
+Sim
+
+
+
+
+Precisão de preço
+
+	
+
+Tick-size do ativo
+
+	
+
+Por ativo
+
+
+
+
+Ciclo fixo
+
+	
+
+UTC, quando aplicável
+
+	
+
+Por estratégia
+
+
+
+
+Sinais repetidos
+
+	
+
+Um sinal por padrão identificado
+
+	
+
+Sim
+
+
+
+
+Martingale
+
+	
+
+Desativado
+
+	
+
+Simulação opcional
+
+
+
+
+Payout mínimo
+
+	
+
+85% como filtro inicial
+
+	
+
+Sim
+
+
+
+
+Empate na liquidação
+
+	
+
+Resultado separado para tratamento
+
+	
+
+Por plataforma
+
+
+
+
+Dados ausentes
+
+	
+
+Não gerar sinal
+
+	
+
+Não
+
+
+
+
+Sobreposição de operações
+
+	
+
+Bloqueada por padrão para a mesma estratégia e ativo
+
+	
+
+Sim
+
+5. Como cadastrar as estratégias no RW TIPS
+
+A estrutura de cada estratégia deve permitir armazenar tanto a regra quanto os resultados do backtest.
+
+Exemplo de configuração para a variante proposta de MHI 2:
+
+{
+  "id": "mhi_2_four_candle_minority",
+  "name": "MHI 2",
+  "variant": "Minoria de quatro velas",
+  "category": "Reversão / estatística",
+  "timeframe": "M1",
+  "cycle_minutes": 5,
+  "reference_candles": 4,
+  "rule": {
+    "type": "minority",
+    "minimum_difference": 2,
+    "doji_policy": "cancel"
+  },
+  "entry": {
+    "position": 5,
+    "expiration_candles": 1
+  },
+  "cancellation": [
+    "TIE",
+    "DOJI",
+    "INCOMPLETE_BLOCK",
+    "MISSING_CANDLE"
+  ],
+  "status": "PROPOSED",
+  "backtest_enabled": false
+}
+
+O campo backtest_enabled só deve ser habilitado após a implementação e aprovação dos testes. O catálogo pode exibir todas as regras propostas, mas deve distinguir claramente as estratégias validadas das que ainda precisam de confirmação.

@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-dotenv>=1.0
+firebase-admin>=6.5
+requests>=2.31
+websocket-client>=1.7
+# Observação de segurança:
+# A biblioteca `iqoptionapi` usada aqui É LOCAL (cópia no diretório ../iqoptionapi ao lado de bridge/).
+# NÃO instalamos nada de git público. A biblioteca é NÃO oficial, pode quebrar quando a IQ Option
+# mudar a plataforma e pode violar os Termos de Uso — use apenas em conta DEMO e por sua conta.
+# (NÃO descomente git remoto.)

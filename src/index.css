@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body, #root { min-height: 100%; }
+body { @apply bg-ink text-zinc-200 font-sans antialiased; font-variant-numeric: tabular-nums; }
+
+@layer components {
+  .card { @apply rounded-xl border border-line bg-panel; }
+  .card-glow { @apply rounded-xl border border-neon/30 bg-panel shadow-glow; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-neon disabled:opacity-50; }
+  .btn-primary { @apply btn bg-neon text-black hover:shadow-glowSm hover:brightness-110; }
+  .btn-ghost { @apply btn border border-line text-zinc-300 hover:border-neon/50 hover:text-neon; }
+  .input { @apply w-full rounded-lg border border-line bg-ink px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-neon/60 focus:outline-none; }
+  .th { @apply whitespace-nowrap px-3 py-2 text-left text-xs font-bold text-zinc-500; }
+  .td { @apply whitespace-nowrap px-3 py-2 text-sm; }
+}
+
+::-webkit-scrollbar { height: 8px; width: 8px; }
+::-webkit-scrollbar-thumb { background: #1d2420; border-radius: 8px; }
+.glow-text { text-shadow: 0 0 18px rgba(0,255,136,.45); }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

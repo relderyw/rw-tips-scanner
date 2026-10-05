@@ -1,0 +1,18 @@
+services:
+  bridge:
+    # Contexto de build é a RAIZ do repositório (um nível acima), porque
+    # precisamos copiar tanto `bridge/` quanto a biblioteca `iqoptionapi/`
+    # (irmã na raiz) para dentro da imagem.
+    build:
+      context: ..
+      dockerfile: bridge/Dockerfile
+    env_file: .env
+    ports:
+      - "8000:8000"
+    # SQLite (data/bridge.db) fica montado fora do container para sobreviver a recriações.
+    volumes:
+      - ./data:/app/bridge/data
+    restart: unless-stopped
+    # Segurança: roda como usuário não-root (se a imagem permitir); default é root no slim.
+    # Descomente abaixo se quiser habilitar e garantir que ./data no host seja gravável.
+    # user: "1000:1000"
