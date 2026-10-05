@@ -21,7 +21,11 @@ BACKFILL_HOURS = int(os.getenv("BACKFILL_HOURS", "168"))
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "15"))
 
 # --- CORS e REST ---
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+raw_cors = os.getenv("CORS_ORIGINS", "*")
+if raw_cors.strip() == "*":
+    CORS_ORIGINS = ["*"]
+else:
+    CORS_ORIGINS = [o.strip() for o in raw_cors.split(",") if o.strip()]
 
 # --- Tempos do coletor em tempo real ---
 # Intervalo do watchdog que verifica streams stale / market_closed (segundos)

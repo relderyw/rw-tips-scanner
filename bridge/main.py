@@ -313,6 +313,16 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def root():
+    return {"status": "ok", "app": "RW TIPS Bridge", "version": "1.0.0"}
+
+
+@app.get("/ping")
+def ping():
+    return {"ping": "pong"}
+
+
 # ===================================================================
 # IQ account sessions and per-user market data
 # ===================================================================
