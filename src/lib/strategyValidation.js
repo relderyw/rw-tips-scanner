@@ -6,9 +6,12 @@ import { getIQSessionToken } from '../services/bridgeApi.js';
 
 export const VALIDATION_TIMEFRAMES = [...new Set(IMPLEMENTED_STRATEGIES.map((strategy) => strategy.timeframe))];
 export const VALIDATION_REFRESH_MS = 2 * 60 * 1000;
-export const MIN_VALIDATION_TRADES = 10;
+export const MIN_VALIDATION_TRADES = 30;
+// Edge mínimo (winRate - breakEven) em pontos percentuais para considerar
+// uma estratégia operável. Abaixo disso é ruído estatístico com amostra pequena.
+export const MIN_EDGE_PCT = 5.0;
 
-const EVALUATION_HOURS = { M1: 1, M5: 2 };
+const EVALUATION_HOURS = { M1: 4, M5: 8 };
 const pairCache = new Map();
 const listeners = new Set();
 let catalog = [];
@@ -60,9 +63,15 @@ function updatePairStatistics(pair) {
       strategy,
       runs,
       stats: base.stats,
+      // Critérios de elegibilidade (todos obrigatórios):
+      //  1. Dados reais da ponte (não simulados)
+      //  2. Mínimo de trades para significância estatística
+      //  3. Win rate acima do break-even do payout
+      //  4. Edge mínimo de MIN_EDGE_PCT pp (afasta ruído estatístico)
       eligible: source === 'live'
         && base.stats.decided >= MIN_VALIDATION_TRADES
-        && base.stats.winRate > base.stats.breakEven,
+        && base.stats.winRate > base.stats.breakEven
+        && base.stats.edge >= MIN_EDGE_PCT,
     };
   });
 }

@@ -148,5 +148,7 @@ export function isRecentSignal(time, tf, nowMs = Date.now()) {
   const timeframeSeconds = TIMEFRAME_SECONDS[tf];
   if (!timeframeSeconds || !Number.isFinite(time)) return false;
   const dispatchAtMs = (time + timeframeSeconds) * 1000;
-  return dispatchAtMs <= nowMs && nowMs - dispatchAtMs <= 15_000;
+  // Janela proporcional ao timeframe: M1=90s, M5=120s
+  const windowMs = timeframeSeconds === 60 ? 90_000 : 120_000;
+  return dispatchAtMs <= nowMs && nowMs - dispatchAtMs <= windowMs;
 }

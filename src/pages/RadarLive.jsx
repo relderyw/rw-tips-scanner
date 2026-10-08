@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Clipboard, RefreshCw, TrendingUp, TrendingDown, Zap, Send } from 'lucide-react';
+import { Check, Clipboard, RefreshCw, TrendingUp, TrendingDown, Zap, Send, ShieldAlert, Clock, AlertTriangle } from 'lucide-react';
 import {
   getPricePrecision, getPriceTick, getTopPayoutAssets, refreshIQActives,
 } from '../data/candleData.js';
@@ -16,17 +16,19 @@ import { useDataStatus } from '../services/dataStatus.js';
 import { liveFeed, liveWsEnabled } from '../services/liveFeed.js';
 import { fmtPct, fmtDateTime } from '../lib/stats.js';
 import { formatSignalMessage, formatSignalMessagePlain, getSignalClockTime, isRecentSignal } from '../lib/signalMessage.js';
+import { isActiveSession, getNextSessionOpen, detectCorrelatedSignals } from '../lib/marketSession.js';
 import { PageHeader, Loading, EmptyState, DirectionBadge, DataBadge, Badge, signClass } from '../components/ui.jsx';
 
-const LOOKBACK = 1;
+const LOOKBACK = 3;
 const HIGHLIGHT_MS = 3000;
 const RADAR_ASSET_LIMIT = 10;
 
 /**
  * Varredura em AMBOS os timeframes para um ativo.
- * Retorna sinais "convergentes" (mesma estratégia em M1 e M5) e sinais isolados.
- * - Sinal convergente: prioridade máxima, usa o TF de maior assertividade.
- * - Sinal isolado: apenas incluído se não houver versão convergente.
+ * Regra de estabilidade para traders profissionais:
+ * 1. Prioriza convergência real (M1 + M5). Se houver, seleciona a estratégia CAMPEÃ do ativo.
+ * 2. Se não houver convergência, seleciona apenas a MELHOR estratégia isolada do ativo.
+ * Isso impede definitivamente que um par flutue em 3, 4 ou 5 estratégias simultaneamente.
  */
 async function scanAssetBothTfs(asset, onPairValidated) {
   const pairsByTf = {};
@@ -50,8 +52,6 @@ async function scanAssetBothTfs(asset, onPairValidated) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  const output = [];
-
   // Agrupa sinais por estratégia para detectar convergência
   const strategiesM1 = new Map(
     (signalsByTf['M1'] || []).map((s) => [s.strategy.id, s]),
@@ -60,6 +60,7 @@ async function scanAssetBothTfs(asset, onPairValidated) {
     (signalsByTf['M5'] || []).map((s) => [s.strategy.id, s]),
   );
 
+  const convergentList = [];
   const processedStrategies = new Set();
 
   // Convergentes: mesma estratégia sinalizada em M1 e M5 com mesma direção
@@ -67,13 +68,12 @@ async function scanAssetBothTfs(asset, onPairValidated) {
     const m5Signal = strategiesM5.get(stratId);
     if (m5Signal && m1Signal.direction === m5Signal.direction) {
       // Usa o TF com maior assertividade
-      const bestSignal = m1Signal.stats.winRate >= m5Signal.stats.winRate ? m1Signal : m5Signal;
-      output.push({
+      const bestSignal = (m1Signal.stats?.winRate ?? 0) >= (m5Signal.stats?.winRate ?? 0) ? m1Signal : m5Signal;
+      convergentList.push({
         ...bestSignal,
         convergent: true,
         m1Signal,
         m5Signal,
-        // Exibe ambos os stats
         statsM1: m1Signal.stats,
         statsM5: m5Signal.stats,
       });
@@ -81,20 +81,38 @@ async function scanAssetBothTfs(asset, onPairValidated) {
     }
   }
 
-  // Isolados: estratégias que não convergiram
-  for (const [stratId, signal] of strategiesM1) {
-    if (!processedStrategies.has(stratId)) {
-      output.push({ ...signal, convergent: false });
-    }
-  }
-  for (const [stratId, signal] of strategiesM5) {
-    if (!processedStrategies.has(stratId)) {
-      output.push({ ...signal, convergent: false });
-      processedStrategies.add(stratId);
-    }
+  // SE HOUVER SINAIS CONVERGENTES:
+  // Retorna APENAS o sinal campeão deste ativo (maior edge / win rate).
+  // Elimina ruído de múltiplas estratégias disputando a mesma paridade.
+  if (convergentList.length > 0) {
+    convergentList.sort((a, b) => {
+      const edgeA = (a.stats?.winRate ?? 0) - (a.stats?.breakEven ?? 50);
+      const edgeB = (b.stats?.winRate ?? 0) - (b.stats?.breakEven ?? 50);
+      return (edgeB - edgeA) || ((b.stats?.winRate ?? 0) - (a.stats?.winRate ?? 0));
+    });
+    return [convergentList[0]];
   }
 
-  return output;
+  // SE NÃO HOUVER CONVERGÊNCIA:
+  // Seleciona no máximo A MELHOR estratégia isolada para o ativo.
+  const allIsolated = [];
+  for (const [stratId, signal] of strategiesM1) {
+    if (!processedStrategies.has(stratId)) allIsolated.push({ ...signal, convergent: false });
+  }
+  for (const [stratId, signal] of strategiesM5) {
+    if (!processedStrategies.has(stratId)) allIsolated.push({ ...signal, convergent: false });
+  }
+
+  if (allIsolated.length > 0) {
+    allIsolated.sort((a, b) => {
+      const edgeA = (a.stats?.winRate ?? 0) - (a.stats?.breakEven ?? 50);
+      const edgeB = (b.stats?.winRate ?? 0) - (b.stats?.breakEven ?? 50);
+      return (edgeB - edgeA) || ((b.stats?.winRate ?? 0) - (a.stats?.winRate ?? 0));
+    });
+    return [allIsolated[0]];
+  }
+
+  return [];
 }
 
 /**
@@ -106,6 +124,8 @@ async function fullScanSignals(assets, onPairValidated) {
   for (const asset of assets) {
     try {
       const signals = await scanAssetBothTfs(asset, onPairValidated);
+      const inSession = isActiveSession(asset.id);
+      const nextOpen = getNextSessionOpen(asset.id);
       signals.forEach((signal) => {
         const tf = signal.tf;
         out.push({
@@ -121,6 +141,8 @@ async function fullScanSignals(assets, onPairValidated) {
           statsM1: signal.statsM1 ?? null,
           statsM5: signal.statsM5 ?? null,
           convergent: signal.convergent ?? false,
+          inSession,
+          nextOpen,
           highlightedUntil: 0,
         });
       });
@@ -372,9 +394,9 @@ export default function RadarLive() {
       setSignals(result.signals);
       setScanErrors(result.errors);
       if (telegramConfigured && autoSendTelegram) {
-        // Envia apenas convergentes automaticamente (sinais isolados ficam para envio manual)
+        // Envia apenas convergentes em sessão de mercado ativa
         result.signals
-          .filter((s) => s.convergent)
+          .filter((s) => s.convergent && s.inSession)
           .forEach((signal) => { void notifyTelegram(signal); });
       }
       setLoading(false);
@@ -397,6 +419,12 @@ export default function RadarLive() {
     if (!isMonitoredTf && !hasPendingForAsset) return;
     appendLiveCandle(asset, message.tf, candle);
 
+    // FIX #5: invalida o pairCache para este ativo/tf para que o scan use os
+    // candles atualizados (com a nova vela) em vez dos stats em cache.
+    if (isMonitoredTf) {
+      invalidatePairValidation(asset, message.tf);
+    }
+
     // Settle resultados para qualquer TF com sinais pendentes
     if (hasPendingForAsset) {
       let pair;
@@ -414,6 +442,8 @@ export default function RadarLive() {
 
     const signals = await scanAssetBothTfs(assetObj, settleTelegramResults);
     const highlightUntil = Date.now() + HIGHLIGHT_MS;
+    const inSession = isActiveSession(asset);
+    const nextOpen = getNextSessionOpen(asset);
     const fresh = signals.map((signal) => ({
       key: `${asset}|${signal.strategy.id}|${signal.tf}|${signal.time}`,
       asset,
@@ -427,15 +457,17 @@ export default function RadarLive() {
       statsM1: signal.statsM1 ?? null,
       statsM5: signal.statsM5 ?? null,
       convergent: signal.convergent ?? false,
+      inSession,
+      nextOpen,
       highlightedUntil: highlightUntil,
     }));
 
     const addedSignals = fresh.filter((signal) => !knownSignalKeysRef.current.has(signal.key));
     addedSignals.forEach((signal) => knownSignalKeysRef.current.add(signal.key));
     if (telegramConfigured && autoSendTelegram) {
-      // Auto-envia apenas convergentes
+      // Auto-envia apenas convergentes em sessão ativa
       addedSignals
-        .filter((s) => s.convergent)
+        .filter((s) => s.convergent && s.inSession)
         .forEach((signal) => { void notifyTelegram(signal); });
     }
     setSignals((previous) => {
@@ -479,12 +511,17 @@ export default function RadarLive() {
   }, [signals, nowTick]);
   const now = Date.now();
 
+  const correlationWarnings = useMemo(
+    () => detectCorrelatedSignals(displaySignals),
+    [displaySignals],
+  );
+
   const totalSession = sessionStats.greens + sessionStats.reds;
   const sessionPct = totalSession > 0 ? Math.round((sessionStats.greens / totalSession) * 100) : null;
 
   return (
     <>
-      <PageHeader title="Radar Live" subtitle="Prioriza sinais CONVERGENTES (M1+M5). Sinais isolados exigem envio manual.">
+      <PageHeader title="Radar Live" subtitle="Prioriza sinais CONVERGENTES (M1+M5) com significância estatística (min 30 ops, edge ≥ 5%). Sinais isolados exigem envio manual.">
         <DataBadge />
       </PageHeader>
 
@@ -522,6 +559,27 @@ export default function RadarLive() {
                 <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Assertividade</div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Alerta de Correlação de Risco */}
+      {correlationWarnings.length > 0 && (
+        <div className="card mb-4 border border-amber-500/40 bg-amber-500/10 p-3 sm:p-4">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-xs font-bold text-amber-200 uppercase tracking-wide">
+                Atenção à Correlação — Risco Duplicado
+              </div>
+              <div className="text-xs text-amber-300/80 mt-1 space-y-1">
+                {correlationWarnings.map((w, i) => (
+                  <div key={i}>
+                    • Ativos do grupo <strong>{w.label}</strong> com sinais simultâneos de <strong>{w.direction}</strong> ({w.assets.join(', ')}). Evite operar múltiplos pares da mesma correlação ao mesmo tempo para não duplicar exposição ao mesmo risco macroeconômico.
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -586,7 +644,7 @@ export default function RadarLive() {
               <p className="text-xs text-zinc-400 mt-1 max-w-xl">
                 {telegramConfigured
                   ? (autoSendTelegram
-                      ? 'Sinais convergentes (M1+M5) são enviados automaticamente para o canal no minuto exato da entrada.'
+                      ? 'Sinais convergentes (M1+M5) em sessão ativa são enviados automaticamente para o canal no minuto exato da entrada.'
                       : 'Envio automático pausado. Os sinais continuam sendo detectados e você pode enviá-los clicando em "Enviar Telegram" no card do sinal.')
                   : (telegramStatusError
                       ? `Erro na comunicação com Telegram: ${telegramStatusError}`
@@ -633,7 +691,7 @@ export default function RadarLive() {
       ) : !topAssets.length ? (
         <EmptyState title="Nenhum ativo disponível para o Radar" text="Aguarde a atualização dos ativos ou confira se a IQ Option retornou ativos abertos com candles suportados." />
       ) : loading && !displaySignals.length ? <Loading text="Catalogando M1 (1h) e M5 (2h) para detectar convergências…" /> : !displaySignals.length ? (
-        <EmptyState title="Nenhum sinal aprovado neste momento" text="Aguardando convergência entre M1 e M5. Estratégias precisam de dados reais, mínimo 10 operações e assertividade acima do break-even." />
+        <EmptyState title="Nenhum sinal aprovado neste momento" text="Aguardando convergência entre M1 e M5. Estratégias precisam de dados reais da corretora, mínimo 30 operações e edge estatístico de 5% acima do break-even." />
       ) : (
         <div className="space-y-3">
           <div className="flex items-center justify-between px-1">
@@ -676,6 +734,11 @@ export default function RadarLive() {
                     {highlighted && !convergent ? (
                       <span className="rounded-full bg-zinc-700/60 px-2 py-0.5 text-[10px] font-semibold uppercase text-zinc-300">Novo</span>
                     ) : null}
+                    {!signal.inSession && (
+                      <span className="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-300 border border-amber-500/30">
+                        <Clock className="h-2.5 w-2.5" /> Fora de Sessão {signal.nextOpen ? `(abre ${signal.nextOpen})` : ''}
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                     <span className="font-bold text-white">{signal.asset}</span>
@@ -700,6 +763,14 @@ export default function RadarLive() {
                       <span className="text-zinc-500">
                         Histórico <span className={`font-semibold ${signClass(signal.stats.edge)}`}>{fmtPct(signal.stats.winRate)}</span> em {signal.stats.decided} ops
                       </span>
+                    )}
+                    {signal.stats?.ci && (
+                      <>
+                        <span className="text-zinc-700">|</span>
+                        <span className="text-zinc-500" title={`Intervalo de Confiança de Wilson 95%: a probabilidade real de acerto estimada está entre ${fmtPct(signal.stats.ci.low, 1)} e ${fmtPct(signal.stats.ci.high, 1)}`}>
+                          IC 95%: <span className="font-mono text-zinc-300">[{fmtPct(signal.stats.ci.low, 0)} – {fmtPct(signal.stats.ci.high, 0)}]</span>
+                        </span>
+                      </>
                     )}
                   </div>
                 </div>
