@@ -400,8 +400,10 @@ class Collector(threading.Thread):
             except (TypeError, ValueError):
                 log.warning("Ignorando ativo binário com dados inválidos: %r", info)
                 continue
+            name = (info.get("name") or "").strip()
             rows.append({
                 "asset": ticker,
+                "name": name or ticker,
                 "active_id": normalized_id,
                 "payout": payout if 0 < payout < 100 else None,
                 "is_open": True,

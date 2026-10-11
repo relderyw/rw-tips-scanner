@@ -84,9 +84,25 @@ export function getPriceTick(assetId) {
 }
 let activeRefreshPromise = null;
 
-function displayIQAsset(ticker) {
+const FRIENDLY_NAMES = {
+  AXY: 'Australian Dollar Index',
+  BXY: 'British Pound Index',
+  DXY: 'Dollar Index',
+  EXY: 'Euro Currency Index',
+  JXY: 'Yen Index',
+  CXY: 'Canadian Dollar Index',
+  INDU: 'Dow Jones (US30)',
+  NDX: 'Nasdaq 100',
+  SPX: 'S&P 500',
+};
+
+function displayIQAsset(ticker, rawName) {
   const otc = /-OTC$/i.test(ticker);
   const symbol = ticker.replace(/-OTC$/i, '');
+  const friendly = FRIENDLY_NAMES[symbol] || (rawName && rawName !== ticker ? rawName : null);
+  if (friendly) {
+    return `${friendly} (${ticker})${otc ? ' (OTC)' : ''}`;
+  }
   const forexPair = symbol.match(/^([A-Z]{3})([A-Z]{3})$/);
   const name = forexPair ? `${forexPair[1]}/${forexPair[2]}` : symbol;
   return `${name}${otc ? ' (OTC)' : ''}`;
@@ -126,7 +142,7 @@ export async function refreshTopPayoutActives(minPayout = 70, limit = 10) {
       .filter((row) => typeof row?.asset === 'string' && row.asset.length > 0)
       .map((row) => ({
         id: row.asset,
-        name: displayIQAsset(row.asset),
+        name: displayIQAsset(row.asset, row.name),
         type: /-OTC$/i.test(row.asset) ? 'OTC' : 'Binária',
         payout: Number.isFinite(row.payout) ? row.payout : 0,
         isOpen: row.is_open === true,
@@ -180,7 +196,7 @@ export async function refreshIQActives() {
       .filter((row) => typeof row?.asset === 'string' && row.asset.length > 0)
       .map((row) => ({
         id: row.asset,
-        name: displayIQAsset(row.asset),
+        name: displayIQAsset(row.asset, row.name),
         type: /-OTC$/i.test(row.asset) ? 'OTC' : 'Binária',
         payout: Number.isFinite(row.payout) ? row.payout : 0,
         isOpen: row.is_open === true,
