@@ -178,16 +178,39 @@ def send_signal(
     except requests.RequestException as exc:
         raise TelegramDeliveryError("Não foi possível conectar ao Telegram.") from exc
 
+    # Se Telegram rejeitou por erro de sintaxe MarkdownV2 (HTTP 400),
+    # tenta imediatamente enviar sem parse_mode (texto limpo) como fallback
+    if response.status_code >= 400 and parse_mode:
+        try:
+            fallback_resp = requests.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json={"chat_id": chat_id, "text": message},
+                timeout=10,
+            )
+            if fallback_resp.status_code < 400:
+                response = fallback_resp
+        except Exception:
+            pass
+
     if response.status_code >= 400:
         _delete_reservation(signal_id)
-        raise TelegramDeliveryError(f"Telegram rejeitou a mensagem (HTTP {response.status_code}).")
+        desc = ""
+        try:
+            desc = response.json().get("description", "")
+        except Exception:
+            pass
+        err_msg = f"Telegram rejeitou o envio (HTTP {response.status_code})"
+        if desc:
+            err_msg += f": {desc}"
+        raise TelegramDeliveryError(err_msg)
     try:
         result = response.json()
     except ValueError as exc:
         raise TelegramDeliveryError("Telegram retornou uma resposta inválida.") from exc
     if not isinstance(result, dict) or result.get("ok") is not True:
         _delete_reservation(signal_id)
-        raise TelegramDeliveryError("Telegram não confirmou o envio da mensagem.")
+        desc = result.get("description", "") if isinstance(result, dict) else ""
+        raise TelegramDeliveryError(f"Telegram não confirmou o envio: {desc}" if desc else "Telegram não confirmou o envio da mensagem.")
 
     message_result = result.get("result")
     message_id = message_result.get("message_id") if isinstance(message_result, dict) else None

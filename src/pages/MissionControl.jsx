@@ -451,18 +451,32 @@ export default function MissionControl() {
   // Telegram teste
   const handleTestTelegram = async () => {
     setTestingTelegram(true);
+    setGlobalError('');
     try {
       const now = new Date();
       const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      if (isSimulated && !getIQSessionToken()) {
+        await new Promise(r => setTimeout(r, 800));
+        setNotice('✅ [Modo Demonstração] Sinal de teste enviado ao Telegram com sucesso!');
+        setTimeout(() => setNotice(''), 4000);
+        return;
+      }
       const res = await sendTelegramSignal({
-        signal_id: `test_${Date.now()}`, strategy: 'EMA Cross + Bollinger (Teste)',
-        asset: 'EURUSD', direction: 'CALL', timeframe: 'M1', signal_time: ts,
-        message_text: `🔔 *SINAL DE TESTE — RW TIPS*\n📈 *CALL* | *EURUSD* | M1\n✅ Telegram funcionando!`,
+        signal_id: `test_${Date.now()}`,
+        strategy: 'EMA Cross + Bollinger (Teste)',
+        asset: 'EURUSD',
+        direction: 'CALL',
+        timeframe: 'M1',
+        signal_time: ts,
+        message_text: `🔔 SINAL DE TESTE — RW TIPS\n\n📈 CALL | EURUSD | M1\n⚡ Confiança: 85%\n💰 Payout: 87%\n🕐 Horário: ${ts}\n\n✅ Conexão Telegram ativa e operando com sucesso!`,
       });
-      setNotice(res.sent ? '✅ Sinal de teste enviado ao Telegram!' : 'Sinal já enviado anteriormente.');
-      setTimeout(() => setNotice(''), 4000);
-    } catch (e) { setGlobalError(`Telegram: ${e.message}`); }
-    finally { setTestingTelegram(false); }
+      setNotice(res.sent ? '✅ Sinal de teste enviado ao Telegram com sucesso!' : 'Sinal já enviado anteriormente.');
+      setTimeout(() => setNotice(''), 5000);
+    } catch (e) {
+      setGlobalError(`Falha no Telegram: ${e.message}`);
+    } finally {
+      setTestingTelegram(false);
+    }
   };
 
   // Computed
