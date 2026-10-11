@@ -417,10 +417,27 @@ def switch_session_account_type(payload: SwitchAccountRequest, session: UserSess
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _get_or_create_scanner(session: UserSession) -> Optional[signal_scanner.SessionScanner]:
+    scanner = signal_scanner.get(session.token)
+    if not scanner and getattr(session, "collector", None):
+        try:
+            scanner = signal_scanner.register(
+                session_token=session.token,
+                identity_hash=session.identity_hash,
+                db_path=session.collector.db_path,
+                payouts=session.collector.payouts,
+                collector=session.collector,
+            )
+            session.collector.add_candle_listener(scanner.on_candle_closed)
+        except Exception as err:
+            log.warning("Falha ao registrar scanner sob demanda: %s", err)
+    return scanner
+
+
 @app.get("/scanner/signals")
 def get_scanner_signals(limit: int = 50, session: UserSession = Depends(require_iq_session)):
     """Retorna o histórico dos sinais gerados pelo scanner automático."""
-    scanner = signal_scanner.get(session.token)
+    scanner = _get_or_create_scanner(session)
     if not scanner:
         return []
     return scanner.get_signals(limit=limit)
@@ -429,7 +446,7 @@ def get_scanner_signals(limit: int = 50, session: UserSession = Depends(require_
 @app.get("/scanner/config")
 def get_scanner_config(session: UserSession = Depends(require_iq_session)):
     """Retorna os parâmetros ativos do scanner (auto trade, stake, confiança)."""
-    scanner = signal_scanner.get(session.token)
+    scanner = _get_or_create_scanner(session)
     if not scanner:
         return {}
     return scanner.get_config()
@@ -438,9 +455,9 @@ def get_scanner_config(session: UserSession = Depends(require_iq_session)):
 @app.post("/scanner/config")
 def update_scanner_config(payload: ScannerConfigRequest, session: UserSession = Depends(require_iq_session)):
     """Configura o auto-trade, stake e nível mínimo de confiança."""
-    scanner = signal_scanner.get(session.token)
+    scanner = _get_or_create_scanner(session)
     if not scanner:
-        raise HTTPException(status_code=404, detail="Scanner não encontrado para esta sessão.")
+        raise HTTPException(status_code=503, detail="Scanner indisponível para esta sessão.")
     if payload.enabled is not None:
         scanner.enable() if payload.enabled else scanner.disable()
     scanner.update_config(
@@ -455,7 +472,7 @@ def update_scanner_config(payload: ScannerConfigRequest, session: UserSession = 
 @app.get("/scanner/best-strategies")
 def get_best_strategies(top_n: int = 15, session: UserSession = Depends(require_iq_session)):
     """Analisa histórico e retorna as estratégias mais assertivas por paridade e timeframe."""
-    scanner = signal_scanner.get(session.token)
+    scanner = _get_or_create_scanner(session)
     if not scanner:
         return []
     return scanner.get_best_strategies(top_n=top_n)

@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext.jsx';
 import RequireAuth from './components/RequireAuth.jsx';
 import Layout from './components/Layout.jsx';
 import Login from './pages/Login.jsx';
+import MissionControl from './pages/MissionControl.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Scanner from './pages/Scanner.jsx';
 import Strategies from './pages/Strategies.jsx';
@@ -20,7 +21,8 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route element={<RequireAuth><Layout /></RequireAuth>}>
-            <Route index element={<Dashboard />} />
+            <Route index element={<MissionControl />} />
+            <Route path="dashboard-geral" element={<Dashboard />} />
             <Route path="scanner" element={<Scanner />} />
             <Route path="estrategias" element={<Strategies />} />
             <Route path="estrategias/:id" element={<StrategyDetail />} />

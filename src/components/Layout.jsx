@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { NavLink, Outlet, Link } from 'react-router-dom';
-import { LayoutDashboard, ScanSearch, BookOpen, CandlestickChart, Radio, LogOut, ShieldAlert, Link2, History, UserCog } from 'lucide-react';
+import { Zap, LayoutDashboard, ScanSearch, BookOpen, CandlestickChart, Radio, LogOut, ShieldAlert, Link2, History, UserCog } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { refreshPayouts, refreshHealth, refreshIQActives } from '../data/candleData.js';
 import { startCatalogRefresh } from '../lib/strategyValidation.js';
@@ -9,13 +9,12 @@ import { liveFeed } from '../services/liveFeed.js';
 import { DataBadge } from './ui.jsx';
 
 const NAV = [
-  { to: '/radar', label: 'Radar Live', icon: Radio, badge: 'AO VIVO' },
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/scanner', label: 'Scanner', icon: ScanSearch },
-  { to: '/estrategias', label: 'Estratégias', icon: BookOpen },
-  { to: '/ativos', label: 'Ativos', icon: CandlestickChart },
-  { to: '/conexao-iq', label: 'Conectar IQ', icon: Link2 },
+  { to: '/', label: 'Mesa Operacional', icon: Zap, badge: '4 ETAPAS', end: true },
+  { to: '/radar', label: 'Radar Live', icon: Radio },
   { to: '/entradas', label: 'Entradas', icon: History },
+  { to: '/estrategias', label: 'Estratégias', icon: BookOpen },
+  { to: '/ativos', label: 'Todos os Ativos', icon: CandlestickChart },
+  { to: '/conexao-iq', label: 'Conexão IQ', icon: Link2 },
   { to: '/administrador', label: 'Administrador', icon: UserCog, adminOnly: true },
 ];
 
