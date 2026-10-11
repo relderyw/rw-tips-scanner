@@ -15,7 +15,7 @@ import { applyHealthSnapshot, setStatus } from '../services/dataStatus.js';
 import { liveFeed } from '../services/liveFeed.js';
 import { invalidateCache } from '../lib/runner.js';
 import { invalidatePairValidation, refreshCatalog } from '../lib/strategyValidation.js';
-import { refreshIQActives } from '../data/candleData.js';
+import { refreshIQActives, refreshTopPayoutActives } from '../data/candleData.js';
 
 export default function IQConnection() {
   const [email, setEmail] = useState('');
@@ -32,7 +32,9 @@ export default function IQConnection() {
   const [autoTrade, setAutoTrade] = useState(false);
   const [stake, setStake] = useState('2.0');
   const [minConfidence, setMinConfidence] = useState('75');
+  const [minPayout, setMinPayout] = useState('80');
   const [scannerSaving, setScannerSaving] = useState(false);
+  const [topAssets, setTopAssets] = useState([]);
 
   // Best strategies and signals state
   const [bestStrategies, setBestStrategies] = useState([]);
@@ -76,10 +78,17 @@ export default function IQConnection() {
           setAutoTrade(Boolean(scannerCfg.auto_trade));
           if (scannerCfg.stake) setStake(String(scannerCfg.stake));
           if (scannerCfg.min_confidence) setMinConfidence(String(scannerCfg.min_confidence));
+          if (scannerCfg.min_payout) setMinPayout(String(scannerCfg.min_payout));
         }
         if (Array.isArray(stratList)) setBestStrategies(stratList);
         if (Array.isArray(sigList)) setSignals(sigList);
         if (tgStatus?.configured !== undefined) setTelegramOk(tgStatus.configured);
+        // Payout-first: carrega apenas ativos com payout >= limiar configurado
+        try {
+          const threshold = scannerCfg?.min_payout || 80;
+          const top = await refreshTopPayoutActives(threshold, 10);
+          if (Array.isArray(top)) setTopAssets(top);
+        } catch (_) { /* fallback silencioso */ }
       } catch (requestError) {
         if (active) setError(`Conta conectada, mas houve falha ao carregar métricas: ${requestError.message}`);
       }
@@ -111,7 +120,10 @@ export default function IQConnection() {
       applyHealthSnapshot(health, 'rest');
       setStatus({ payouts, payoutsAt: Date.now() });
       if (Array.isArray(stratList)) setBestStrategies(stratList);
-      await refreshIQActives();
+      // Payout-first connect: carrega top ativos imediatamente
+      const threshold = parseInt(minPayout, 10) || 80;
+      const top = await refreshTopPayoutActives(threshold, 10).catch(() => []);
+      if (Array.isArray(top)) setTopAssets(top);
       refreshCatalog({ force: true }).catch((catalogError) => {
         console.error('[IQConnection] falha ao atualizar catálogo:', catalogError);
       });
@@ -144,13 +156,18 @@ export default function IQConnection() {
     setError('');
     setNotice('');
     try {
+      const payoutThreshold = parseInt(minPayout, 10) || 80;
       const res = await updateScannerConfig({
         auto_trade: autoTrade,
         stake: parseFloat(stake) || 2.0,
         min_confidence: parseInt(minConfidence, 10) || 75,
+        min_payout: payoutThreshold,
       });
       setAutoTrade(res.auto_trade);
       setNotice('Parâmetros do scanner e auto-trade salvos com sucesso!');
+      // Atualiza a lista de ativos com o novo limiar de payout
+      const top = await refreshTopPayoutActives(payoutThreshold, 10).catch(() => []);
+      if (Array.isArray(top)) setTopAssets(top);
     } catch (e) {
       setError(`Falha ao salvar configuração do scanner: ${e.message}`);
     } finally {
@@ -272,8 +289,9 @@ export default function IQConnection() {
               <span className="text-xs text-zinc-400">Opera na conta ativa: <strong>{isDemo ? 'Demo (Treino)' : 'Real'}</strong></span>
             </div>
 
-            <form onSubmit={handleSaveScannerConfig} className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-              <div>
+            <form onSubmit={handleSaveScannerConfig} className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+              {/* Auto-trade toggle — spans full width on mobile, 1 col on md */}
+              <div className="md:col-span-2">
                 <label className="block text-xs font-semibold text-zinc-300 mb-1">
                   Entrada Automática na IQ Option
                 </label>
@@ -318,7 +336,30 @@ export default function IQConnection() {
                 />
               </div>
 
-              <div className="md:col-span-3 flex justify-between items-center pt-2">
+              {/* ── NOVO: Payout mínimo ─────────────────────────────────── */}
+              <div className="md:col-span-2">
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Payout Mínimo dos Ativos (%) — lista atualiza a cada 5 min
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="minPayout"
+                    type="range"
+                    min="50"
+                    max="99"
+                    step="1"
+                    value={minPayout}
+                    onChange={(e) => setMinPayout(e.target.value)}
+                    className="flex-1 accent-neon"
+                  />
+                  <span className="text-neon font-mono font-bold text-sm w-14 text-center">≥ {minPayout}%</span>
+                </div>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  Somente ativos com payout ≥ {minPayout}% serão analisados pelo scanner. Quanto maior, mais seletivo.
+                </p>
+              </div>
+
+              <div className="md:col-span-2 flex justify-between items-center pt-2">
                 <p className="text-xs text-zinc-500">
                   {autoTrade
                     ? `⚠️ Atenção: Cada sinal disparado com confiança ≥ ${minConfidence}% abrirá ordem de $${stake} na sua conta ${isDemo ? 'Demo' : 'Real'}.`
@@ -360,6 +401,46 @@ export default function IQConnection() {
               Enviar Sinal de Teste
             </button>
           </div>
+
+          {/* ── Top Ativos por Payout ───────────────────────────────── */}
+          {topAssets.length > 0 && (
+            <div className="card p-6 border-line">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5 text-emerald-400" />
+                  <h3 className="text-base font-bold text-white">Top Ativos por Payout — Paridades Ativas</h3>
+                  <span className="rounded-full bg-zinc-800 text-zinc-400 text-[10px] px-2 py-0.5 font-bold">≥ {minPayout}% | cache 5 min</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const top = await refreshTopPayoutActives(parseInt(minPayout, 10) || 80, 10).catch(() => []);
+                    if (Array.isArray(top)) setTopAssets(top);
+                  }}
+                  className="btn-ghost text-xs text-zinc-400 hover:text-white"
+                >
+                  <RefreshCw className="h-3.5 w-3.5 mr-1" /> Atualizar
+                </button>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                {topAssets.slice(0, 10).map((asset, i) => (
+                  <div
+                    key={asset.id}
+                    className="flex flex-col items-center justify-center rounded-xl bg-panel2 border border-line p-3 gap-1 hover:border-neon/40 transition-colors"
+                  >
+                    <span className="text-[10px] font-bold text-zinc-400">#{i + 1}</span>
+                    <span className="font-bold text-white text-xs text-center">{asset.name || asset.id}</span>
+                    <span className={`text-xs font-mono font-bold ${
+                      asset.payout >= 90 ? 'text-neon' : asset.payout >= 85 ? 'text-emerald-400' : 'text-yellow-400'
+                    }`}>{asset.payout}%</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+                      asset.isOpen ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'
+                    }`}>{asset.isOpen ? 'ABERTO' : 'FECHADO'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Melhores Estratégias por Paridade x Timeframe */}
           <div className="card p-6 border-line">

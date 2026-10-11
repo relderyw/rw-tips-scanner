@@ -342,6 +342,7 @@ class ScannerConfigRequest(BaseModel):
     auto_trade: Optional[bool] = None
     stake: Optional[float] = None
     min_confidence: Optional[int] = None
+    min_payout: Optional[int] = None
     enabled: Optional[bool] = None
 
 
@@ -446,6 +447,7 @@ def update_scanner_config(payload: ScannerConfigRequest, session: UserSession = 
         auto_trade=payload.auto_trade,
         stake=payload.stake,
         min_confidence=payload.min_confidence,
+        min_payout=payload.min_payout,
     )
     return scanner.get_config()
 
@@ -499,6 +501,40 @@ def binary_option_actives(session: UserSession = Depends(require_iq_session)):
         return session.collector.binary_option_actives()
     except ConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+# Cache para /actives/top: evita chamar binary_option_actives() a cada requisicao
+_top_actives_cache: Dict[str, dict] = {}  # key = session_token
+_top_actives_lock  = threading.Lock()
+TOP_ACTIVES_TTL    = 300  # 5 minutos
+
+
+@app.get("/actives/top")
+def binary_option_top_actives(
+    min_payout: int = Query(70, ge=0, le=100),
+    limit: int = Query(10, ge=1, le=50),
+    session: UserSession = Depends(require_iq_session),
+):
+    """Retorna os `limit` ativos com MAIOR payout acima de `min_payout`%, cache 5 min."""
+    token = session.token
+    now   = time.time()
+    with _top_actives_lock:
+        entry = _top_actives_cache.get(token)
+        if entry and now - entry["ts"] < TOP_ACTIVES_TTL:
+            actives_raw = entry["data"]
+        else:
+            try:
+                actives_raw = session.collector.binary_option_actives()
+            except ConnectionError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            _top_actives_cache[token] = {"ts": now, "data": actives_raw}
+
+    filtered = [
+        a for a in actives_raw
+        if a.get("is_open") and (a.get("payout") or 0) >= min_payout
+    ]
+    filtered.sort(key=lambda a: a.get("payout", 0), reverse=True)
+    return filtered[:limit]
 
 
 @app.get("/payouts")

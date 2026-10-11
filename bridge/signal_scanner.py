@@ -443,7 +443,17 @@ class SessionScanner:
     def get_best_strategies(self, top_n: int = 15) -> List[dict]:
         """Calcula assertividade histórica real de estratégias x paridade x timeframe."""
         results = []
-        assets_to_test = list(self.payouts.keys()) if self.payouts else config.ASSET_IDS
+        # ── Payout-first: só analisa ativos que atendam ao limiar configurado ──
+        with self._lock:
+            min_pay = self.min_payout
+        if self.payouts:
+            assets_to_test = [
+                asset for asset, pay in self.payouts.items()
+                if pay >= min_pay
+            ]
+            assets_to_test.sort(key=lambda a: self.payouts.get(a, 0), reverse=True)
+        else:
+            assets_to_test = list(config.ASSET_IDS)
         timeframes = ["M1", "M5"]
 
         for asset in assets_to_test[:10]:
@@ -495,7 +505,13 @@ class SessionScanner:
         with self._lock:
             return list(reversed(self.signals_history[-limit:]))
 
-    def update_config(self, auto_trade: Optional[bool] = None, stake: Optional[float] = None, min_confidence: Optional[int] = None):
+    def update_config(
+        self,
+        auto_trade: Optional[bool] = None,
+        stake: Optional[float] = None,
+        min_confidence: Optional[int] = None,
+        min_payout: Optional[int] = None,
+    ):
         with self._lock:
             if auto_trade is not None:
                 self.auto_trade = bool(auto_trade)
@@ -503,6 +519,8 @@ class SessionScanner:
                 self.stake = float(stake)
             if min_confidence is not None and 50 <= min_confidence <= 99:
                 self.min_confidence = int(min_confidence)
+            if min_payout is not None and 0 <= min_payout <= 99:
+                self.min_payout = int(min_payout)
 
     def get_config(self) -> dict:
         with self._lock:

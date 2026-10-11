@@ -97,6 +97,8 @@ export async function disconnectIQAccount() {
 export const fetchBridgeCandles = (asset, tf, hours) =>
   request('/candles', { params: { asset, tf, hours } });
 export const fetchIQBinaryActives = () => request('/actives');
+export const fetchTopPayoutActives = (minPayout = 70, limit = 10) =>
+  request('/actives/top', { params: { min_payout: minPayout, limit } });
 export const fetchIQAccount = () => request('/account');
 export const fetchIQPositions = (limit = 100) =>
   request('/positions', { params: { limit } });

@@ -9,7 +9,7 @@
 //   • o polling REST de health continua existindo como fallback se o WS cair.
 import {
   bridgeEnabled, getIQSessionToken, fetchBridgeCandles, fetchIQBinaryActives,
-  fetchBridgePayouts, fetchBridgeHealth,
+  fetchTopPayoutActives, fetchBridgePayouts, fetchBridgeHealth,
 } from '../services/bridgeApi.js';
 import { applyHealthSnapshot, getStatus, setStatus } from '../services/dataStatus.js';
 import { liveFeed, liveWsEnabled } from '../services/liveFeed.js';
@@ -103,9 +103,66 @@ export function getAvailableAssets({ analysisOnly = false } = {}) {
   return ASSETS;
 }
 
-export function getTopPayoutAssets(limit = 10) {
+export function getTopPayoutAssets(limit = 10, minPayout = 0) {
   if (!getIQSessionToken()) return [];
-  return selectTopPayoutAssets(getStatus().activeAssets, limit);
+  return selectTopPayoutAssets(getStatus().activeAssets, limit, minPayout);
+}
+
+/**
+ * refreshTopPayoutActives — payout-first loader.
+ *
+ * 1. Busca do bridge APENAS os `limit` ativos com payout >= minPayout (cache 5 min).
+ * 2. Atualiza o store global com esses ativos, sem descartar os ativos já carregados.
+ * 3. É idempotente — chamadas concorrentes são debounced.
+ */
+let _topRefreshPromise = null;
+export async function refreshTopPayoutActives(minPayout = 70, limit = 10) {
+  if (!bridgeEnabled || !getIQSessionToken()) return [];
+  if (_topRefreshPromise) return _topRefreshPromise;
+  _topRefreshPromise = (async () => {
+    const rows = await fetchTopPayoutActives(minPayout, limit);
+    if (!Array.isArray(rows)) return [];
+    const topAssets = rows
+      .filter((row) => typeof row?.asset === 'string' && row.asset.length > 0)
+      .map((row) => ({
+        id: row.asset,
+        name: displayIQAsset(row.asset),
+        type: /-OTC$/i.test(row.asset) ? 'OTC' : 'Binária',
+        payout: Number.isFinite(row.payout) ? row.payout : 0,
+        isOpen: row.is_open === true,
+        analysisSupported: row.candles_supported === true,
+        pricePrecision: Number.isInteger(row.price_precision) && row.price_precision >= 0 && row.price_precision <= 12
+          ? row.price_precision
+          : undefined,
+        priceTick: Number.isFinite(row.price_tick) && row.price_tick > 0
+          ? row.price_tick
+          : undefined,
+      }));
+
+    // Mescla com os ativos já carregados: prioriza novos dados
+    const prevAssets = getStatus().activeAssets;
+    const topIds = new Set(topAssets.map((a) => a.id));
+    const merged = [
+      ...topAssets,
+      ...prevAssets.filter((a) => !topIds.has(a.id)),
+    ];
+
+    setStatus({
+      activeAssets: merged,
+      activeAssetsAt: Date.now(),
+      payouts: {
+        ...getStatus().payouts,
+        ...Object.fromEntries(topAssets.map((a) => [a.id, a.payout])),
+      },
+      payoutsAt: Date.now(),
+    });
+    return topAssets;
+  })();
+  try {
+    return await _topRefreshPromise;
+  } finally {
+    _topRefreshPromise = null;
+  }
 }
 
 export async function refreshIQActives() {
