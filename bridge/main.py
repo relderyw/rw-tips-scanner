@@ -38,7 +38,7 @@ import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Dict, Literal, Set
+from typing import Dict, List, Literal, Optional, Set
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,6 +60,7 @@ import config  # noqa: E402
 import db  # noqa: E402
 import admin_auth  # noqa: E402
 import telegram_notifications  # noqa: E402
+import signal_scanner  # noqa: E402
 from sessions import UserSession, session_manager  # noqa: E402
 
 logging.basicConfig(
@@ -330,6 +331,18 @@ def ping():
 class IQLoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=512)
+    account_type: str = Field(default="PRACTICE")
+
+
+class SwitchAccountRequest(BaseModel):
+    account_type: Literal["PRACTICE", "REAL", "practice", "real", "demo"]
+
+
+class ScannerConfigRequest(BaseModel):
+    auto_trade: Optional[bool] = None
+    stake: Optional[float] = None
+    min_confidence: Optional[int] = None
+    enabled: Optional[bool] = None
 
 
 class TelegramSignalRequest(BaseModel):
@@ -337,7 +350,7 @@ class TelegramSignalRequest(BaseModel):
     strategy: str = Field(min_length=1, max_length=120)
     asset: str = Field(min_length=1, max_length=64)
     direction: Literal["CALL", "PUT"]
-    timeframe: Literal["M1", "M5"]
+    timeframe: Literal["M1", "M5", "M15", "M30", "1m", "5m", "15m"]
     signal_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     message_text: str | None = Field(default=None, max_length=4096)
 
@@ -362,7 +375,7 @@ async def create_session(payload: IQLoginRequest, request: Request):
         attempts.append(now)
     try:
         session = await asyncio.to_thread(
-            session_manager.create, payload.email, payload.password
+            session_manager.create, payload.email, payload.password, payload.account_type
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -379,7 +392,7 @@ async def create_session(payload: IQLoginRequest, request: Request):
         "email": session.email,
         "connected": session.collector.connected,
         "account_type": session.collector.account_type,
-        "read_only": True,
+        "read_only": False,
     }
 
 
@@ -389,8 +402,61 @@ def current_session(session: UserSession = Depends(require_iq_session)):
         "email": session.email,
         "connected": bool(session.collector.connected),
         "account_type": session.collector.account_type,
-        "read_only": True,
+        "read_only": False,
     }
+
+
+@app.post("/session/account-type")
+def switch_session_account_type(payload: SwitchAccountRequest, session: UserSession = Depends(require_iq_session)):
+    """Alterna entre conta DEMO (PRACTICE) e CONTA REAL em tempo de execução."""
+    try:
+        new_account_type = session_manager.switch_account_type(session.token, payload.account_type)
+        return {"account_type": new_account_type, "status": "switched"}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/scanner/signals")
+def get_scanner_signals(limit: int = 50, session: UserSession = Depends(require_iq_session)):
+    """Retorna o histórico dos sinais gerados pelo scanner automático."""
+    scanner = signal_scanner.get(session.token)
+    if not scanner:
+        return []
+    return scanner.get_signals(limit=limit)
+
+
+@app.get("/scanner/config")
+def get_scanner_config(session: UserSession = Depends(require_iq_session)):
+    """Retorna os parâmetros ativos do scanner (auto trade, stake, confiança)."""
+    scanner = signal_scanner.get(session.token)
+    if not scanner:
+        return {}
+    return scanner.get_config()
+
+
+@app.post("/scanner/config")
+def update_scanner_config(payload: ScannerConfigRequest, session: UserSession = Depends(require_iq_session)):
+    """Configura o auto-trade, stake e nível mínimo de confiança."""
+    scanner = signal_scanner.get(session.token)
+    if not scanner:
+        raise HTTPException(status_code=404, detail="Scanner não encontrado para esta sessão.")
+    if payload.enabled is not None:
+        scanner.enable() if payload.enabled else scanner.disable()
+    scanner.update_config(
+        auto_trade=payload.auto_trade,
+        stake=payload.stake,
+        min_confidence=payload.min_confidence,
+    )
+    return scanner.get_config()
+
+
+@app.get("/scanner/best-strategies")
+def get_best_strategies(top_n: int = 15, session: UserSession = Depends(require_iq_session)):
+    """Analisa histórico e retorna as estratégias mais assertivas por paridade e timeframe."""
+    scanner = signal_scanner.get(session.token)
+    if not scanner:
+        return []
+    return scanner.get_best_strategies(top_n=top_n)
 
 
 @app.delete("/session")

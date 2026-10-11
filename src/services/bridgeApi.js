@@ -52,16 +52,35 @@ async function request(path, { params = {}, method = 'GET', body, timeoutMs = 15
   }
 }
 
-export async function connectIQAccount(email, password) {
+export async function connectIQAccount(email, password, account_type = 'PRACTICE') {
   const session = await request('/session', {
     method: 'POST',
-    body: { email, password },
+    body: { email, password, account_type },
     timeoutMs: 70000,
     authenticate: false,
   });
   setIQSessionToken(session.token);
   return session;
 }
+
+export async function switchIQAccountType(account_type) {
+  return request('/session/account-type', {
+    method: 'POST',
+    body: { account_type },
+  });
+}
+
+export const fetchScannerSignals = (limit = 50) =>
+  request('/scanner/signals', { params: { limit } });
+
+export const fetchScannerConfig = () =>
+  request('/scanner/config');
+
+export const updateScannerConfig = (config) =>
+  request('/scanner/config', { method: 'POST', body: config });
+
+export const fetchBestStrategies = (top_n = 15) =>
+  request('/scanner/best-strategies', { params: { top_n } });
 
 export async function fetchIQSession() {
   return request('/session');

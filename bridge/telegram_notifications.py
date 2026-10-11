@@ -124,7 +124,7 @@ def send_signal(
     uma mensagem básica como fallback.
     """
     bot_token, chat_id = _get_configuration()
-    if direction not in {"CALL", "PUT"} or timeframe not in {"M1", "M5"}:
+    if direction not in {"CALL", "PUT"} or timeframe not in {"M1", "M5", "M15", "M30", "1m", "5m", "15m"}:
         raise ValueError("Direção ou timeframe inválido para sinal do Telegram.")
     if not _CLOCK_RE.fullmatch(signal_time):
         raise ValueError("Horário inválido para sinal do Telegram.")

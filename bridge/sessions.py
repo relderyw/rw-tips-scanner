@@ -12,6 +12,7 @@ from typing import Dict, Optional
 import config
 import db
 from collector import Collector
+import signal_scanner
 
 SESSION_TIMEFRAMES = config.TIMEFRAMES
 SESSION_BACKFILL_HOURS = 14
@@ -34,7 +35,7 @@ class IQSessionManager:
         self._identity_to_token: Dict[str, str] = {}
         self._lock = threading.RLock()
 
-    def create(self, email: str, password: str) -> UserSession:
+    def create(self, email: str, password: str, account_type: str = "PRACTICE") -> UserSession:
         normalized_email = email.strip().casefold()
         if not normalized_email or not password:
             raise ValueError("Informe o e-mail e a senha da IQ Option.")
@@ -61,7 +62,7 @@ class IQSessionManager:
             timeframes=SESSION_TIMEFRAMES,
             backfill_hours=SESSION_BACKFILL_HOURS,
             session_id=token,
-            account_type="real",
+            account_type=account_type.lower(),
         )
         collector.start()
 
@@ -73,11 +74,22 @@ class IQSessionManager:
             collector.stop()
             raise ConnectionError(f"Não foi possível conectar à IQ Option: {error}")
 
+        # Registra e ativa o scanner de sinais em tempo real
+        scanner = signal_scanner.register(
+            session_token=token,
+            identity_hash=identity_hash,
+            db_path=user_db_path,
+            payouts=collector.payouts,
+            collector=collector,
+        )
+        collector.add_candle_listener(scanner.on_candle_closed)
+
         session = UserSession(token, normalized_email, identity_hash, collector, time.time())
         with self._lock:
             active_token = self._identity_to_token.get(identity_hash)
             if active_token in self._sessions:
                 collector.stop()
+                signal_scanner.unregister(token)
                 raise ValueError("Esta conta IQ Option já está conectada.")
             self._sessions[token] = session
             self._identity_to_token[identity_hash] = token
@@ -90,12 +102,24 @@ class IQSessionManager:
                 session.last_used = time.time()
             return session
 
+    def switch_account_type(self, token: str, account_type: str) -> str:
+        with self._lock:
+            session = self._sessions.get(token)
+            if session is None:
+                raise ValueError("Sessão não encontrada.")
+            act = "demo" if "practice" in str(account_type).lower() or "demo" in str(account_type).lower() else "real"
+            if session.collector.client:
+                session.collector.client.switch_account(act)
+            session.collector.account_type = "practice" if act == "demo" else "real"
+            return session.collector.account_type
+
     def disconnect(self, token: str) -> bool:
         with self._lock:
             session = self._sessions.pop(token, None)
             if session is None:
                 return False
             self._identity_to_token.pop(session.identity_hash, None)
+        signal_scanner.unregister(token)
         session.collector.stop()
         return True
 

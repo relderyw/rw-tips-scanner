@@ -158,6 +158,56 @@ class Collector(threading.Thread):
         self._last_payout_refresh: float = 0.0
         self._last_backfill_run: float = 0.0
 
+        # Listeners para eventos de vela fechada (ex: signal_scanner)
+        self._candle_listeners: list = []
+
+    def add_candle_listener(self, fn) -> None:
+        if fn not in self._candle_listeners:
+            self._candle_listeners.append(fn)
+
+    def remove_candle_listener(self, fn) -> None:
+        if fn in self._candle_listeners:
+            self._candle_listeners.remove(fn)
+
+    def execute_trade(self, asset: str, direction: str, expiry: int = 1, amount: float = 2.0):
+        """Executa entrada na IQ Option (binária ou digital) para a conta conectada."""
+        client = self.client
+        if not self.connected or client is None:
+            return False, "Cliente IQ Option não conectado"
+        try:
+            from iqoptionapi.models import OptionsTradeParams, Direction, OptionType
+            dir_enum = Direction.CALL if direction.upper() == "CALL" else Direction.PUT
+            # Tenta binária primeiro
+            try:
+                params = OptionsTradeParams(
+                    asset=asset,
+                    expiry=expiry,
+                    amount=amount,
+                    direction=dir_enum,
+                    option_type=OptionType.BINARY_OPTION,
+                )
+                res = client.execute_options_trade(params)
+                if isinstance(res, tuple) and res[0]:
+                    return True, str(res[1])
+            except Exception as e_bin:
+                log.debug("Trade binário não executado, tentando digital: %s", e_bin)
+
+            # Tenta digital
+            params_dig = OptionsTradeParams(
+                asset=asset,
+                expiry=expiry,
+                amount=amount,
+                direction=dir_enum,
+                option_type=OptionType.DIGITAL_OPTION,
+            )
+            res_dig = client.execute_options_trade(params_dig)
+            if isinstance(res_dig, tuple) and res_dig[0]:
+                return True, str(res_dig[1])
+            return False, str(res_dig)
+        except Exception as e:
+            log.error("Erro ao executar trade na IQ Option: %s", e)
+            return False, str(e)
+
     # ===================================================================
     # Lifecycle público
     # ===================================================================
@@ -258,15 +308,20 @@ class Collector(threading.Thread):
             raise RuntimeError(
                 "Informe o e-mail e a senha da conta IQ Option."
             )
+        act = "demo" if "practice" in str(self.account_type).lower() or "demo" in str(self.account_type).lower() else "real"
         client = IQOptionClient(
             email=self.email,
             password=self.password,
-            account_type=self.account_type,
+            account_type=act,
         )
         try:
             ok = client.connect()
             if not ok:
                 raise ConnectionError("IQOptionClient.connect() retornou False")
+            try:
+                client.switch_account(act)
+            except Exception:
+                pass
             client.on_new_candle(self._on_new_closed_candle_callback)
         except Exception:
             try:
@@ -279,34 +334,37 @@ class Collector(threading.Thread):
         self.connected = True
         self._startup_error = None
         self._startup_event.set()
-        log.info("Conectado à IQ Option. Conta: %s (somente leitura).", self.account_type.upper())
+        log.info("Conectado à IQ Option. Conta: %s.", self.account_type.upper())
 
     def account_overview(self) -> Dict[str, object]:
-        if self.account_type != "real":
-            raise RuntimeError("O saldo real só pode ser consultado numa sessão real.")
         client = self.client
         if not self.connected or client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
 
         with self._account_data_lock:
-            balances = client.account_manager.get_balances()
-            account_id = client.appstate.balance_id
-            account = next(
-                (item for item in balances if item.get("id") == account_id),
-                None,
-            )
-            if account is None or account.get("type") != 1:
-                raise LookupError("A IQ Option não retornou o saldo da conta real ativa.")
+            try:
+                balance = client.get_balance()
+                currency = getattr(client.appstate, "currency", "USD") or "USD"
+            except Exception:
+                balances = client.account_manager.get_balances()
+                account_id = client.appstate.balance_id
+                account = next(
+                    (item for item in balances if item.get("id") == account_id),
+                    None,
+                )
+                if account is None:
+                    raise LookupError("A IQ Option não retornou o saldo da conta ativa.")
+                balance = account.get("amount", 0)
+                currency = account.get("currency", "USD")
+
             return {
-                "balance": account.get("amount"),
-                "currency": account.get("currency"),
+                "balance": balance,
+                "currency": currency,
                 "account_type": self.account_type,
-                "read_only": True,
+                "read_only": False,
             }
 
     def position_history(self, limit: int) -> list:
-        if self.account_type != "real":
-            raise RuntimeError("O histórico real só pode ser consultado numa sessão real.")
         client = self.client
         if not self.connected or client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
@@ -691,6 +749,13 @@ class Collector(threading.Thread):
 
         # 1) Persistência.
         db.upsert(asset_id, tf_id, [candle], self.db_path)
+
+        # 1.1) Notifica listeners registrados (ex: scanner de sinais)
+        for listener in list(self._candle_listeners):
+            try:
+                listener(asset_id, tf_id, candle)
+            except Exception as listener_err:
+                log.error("Listener de vela falhou (%s/%s): %s", asset_id, tf_id, listener_err)
 
         # 2) Atualiza métricas globais do stream.
         self.stream_last_candle_ts[sk] = int(candle["time"])
