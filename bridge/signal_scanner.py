@@ -154,104 +154,157 @@ class ScannerSignal:
     payout:     int = 0
 
 
-# ─── Motor de análise ─────────────────────────────────────────────────────────
+# ─── Motor de análise técnica por confluência ────────────────────────────────
 def analyse(asset: str, candles: List[dict], timeframe: str) -> Optional[ScannerSignal]:
-    """Analisa velas e retorna ScannerSignal ou None."""
+    """Analisa velas e retorna ScannerSignal baseado em confluência técnica real (Setups)."""
     if len(candles) < MIN_CANDLES:
         return None
 
     closes = [float(c["close"]) for c in candles]
     highs  = [float(c["high"])  for c in candles]
     lows   = [float(c["low"])   for c in candles]
+    opens  = [float(c["open"])  for c in candles]
 
-    cs, ps = 0, 0
-    cr: List[str] = []
-    pr: List[str] = []
+    last = candles[-1]
+    prev = candles[-2]
+    curr_c = closes[-1]
+    curr_o = opens[-1]
+    curr_h = highs[-1]
+    curr_l = lows[-1]
 
-    # 1 — EMA Cross (9/21)
+    # Indicadores principais
     e9  = _ema(closes, 9)
     e21 = _ema(closes, 21)
-    if e9 and e21:
-        if e9 > e21 and closes[-1] > e21:
-            cs += WEIGHTS["EMA Cross"]; cr.append("EMA9>EMA21")
-        elif e9 < e21 and closes[-1] < e21:
-            ps += WEIGHTS["EMA Cross"]; pr.append("EMA9<EMA21")
-
-    # 2 — MACD
     ml, ms = _macd(closes)
-    if ml is not None and ms is not None:
-        if ml > ms and ml > 0:
-            cs += WEIGHTS["MACD"]; cr.append("MACD Bullish")
-        elif ml < ms and ml < 0:
-            ps += WEIGHTS["MACD"]; pr.append("MACD Bearish")
-        elif ml > ms:
-            cs += int(WEIGHTS["MACD"] * 0.6); cr.append("MACD Cross↑")
-        elif ml < ms:
-            ps += int(WEIGHTS["MACD"] * 0.6); pr.append("MACD Cross↓")
-
-    # 3 — RSI
-    r = _rsi(closes)
-    if r is not None:
-        if 50 < r < 70:
-            cs += WEIGHTS["RSI"]; cr.append(f"RSI {r:.0f}↑")
-        elif 30 < r < 50:
-            ps += WEIGHTS["RSI"]; pr.append(f"RSI {r:.0f}↓")
-        elif r <= 30:
-            cs += WEIGHTS["RSI"]; cr.append(f"RSI {r:.0f} Sobrevenda")
-        elif r >= 70:
-            ps += WEIGHTS["RSI"]; pr.append(f"RSI {r:.0f} Sobrecompra")
-
-    # 4 — Bollinger Bands
+    r   = _rsi(closes)
     upper, mid, lower = _bollinger(closes)
-    if upper and lower and mid:
-        if closes[-1] <= lower:
-            cs += WEIGHTS["Bollinger"]; cr.append("BB Lower Bounce")
-        elif closes[-1] >= upper:
-            ps += WEIGHTS["Bollinger"]; pr.append("BB Upper Rejection")
-        elif closes[-1] > mid:
-            cs += int(WEIGHTS["Bollinger"] * 0.4); cr.append("Acima BB Mid")
-        else:
-            ps += int(WEIGHTS["Bollinger"] * 0.4); pr.append("Abaixo BB Mid")
+    st  = _stochastic(highs, lows, closes)
 
-    # 5 — Stochastic
-    st = _stochastic(highs, lows, closes)
-    if st is not None:
-        if st < 20:
-            cs += WEIGHTS["Stochastic"]; cr.append(f"Stoch {st:.0f} Oversold")
-        elif st > 80:
-            ps += WEIGHTS["Stochastic"]; pr.append(f"Stoch {st:.0f} Overbought")
+    call_reasons: List[str] = []
+    put_reasons: List[str] = []
+    call_score = 0
+    put_score = 0
 
-    # 6 — Engulfing
-    if len(candles) >= 2:
-        prev, curr = candles[-2], candles[-1]
-        if _is_bull_engulf(prev, curr):
-            cs += WEIGHTS["Engulfing"]; cr.append("Engulfing Bull")
-        elif _is_bear_engulf(prev, curr):
-            ps += WEIGHTS["Engulfing"]; pr.append("Engulfing Bear")
+    # -------------------------------------------------------------
+    # SETUP 1: Reversão / Retração em Exaustão (Mean Reversion)
+    # -------------------------------------------------------------
+    # CALL: Toque ou rompimento da banda inferior + Sobrevenda + Padrão de rejeição
+    if lower and curr_c <= lower * 1.0015:
+        call_score += 25
+        call_reasons.append("Toque Banda Inferior BB")
+    if r is not None and r <= 32:
+        call_score += 25
+        call_reasons.append(f"RSI Sobrevendido ({r:.0f})")
+    elif r is not None and r <= 40:
+        call_score += 10
+        call_reasons.append(f"RSI Baixo ({r:.0f})")
 
-    # 7 — Hammer / Shooting Star
-    last = candles[-1]
+    if st is not None and st <= 22:
+        call_score += 15
+        call_reasons.append(f"Estocástico Exaustão ({st:.0f})")
+
     if _is_hammer(last):
-        cs += WEIGHTS["Hammer/Star"]; cr.append("Martelo")
-    elif _is_shooting_star(last):
-        ps += WEIGHTS["Hammer/Star"]; pr.append("Estrela Cadente")
+        call_score += 20
+        call_reasons.append("Martelo de Alta")
+    elif _is_bull_engulf(prev, last):
+        call_score += 25
+        call_reasons.append("Engolfo de Alta")
+    elif curr_c > curr_o and (curr_o - curr_l) > abs(curr_c - curr_o) * 1.2:
+        call_score += 15
+        call_reasons.append("Pavio Inferior de Rejeição")
 
-    # 8 — 3 Velas Consecutivas
-    if _three_consec(candles, "up"):
-        cs += WEIGHTS["3 Velas"]; cr.append("3 Altas")
-    elif _three_consec(candles, "down"):
-        ps += WEIGHTS["3 Velas"]; pr.append("3 Baixas")
+    # PUT: Toque ou rompimento da banda superior + Sobrecompra + Padrão de rejeição
+    if upper and curr_c >= upper * 0.9985:
+        put_score += 25
+        put_reasons.append("Toque Banda Superior BB")
+    if r is not None and r >= 68:
+        put_score += 25
+        put_reasons.append(f"RSI Sobrecomprado ({r:.0f})")
+    elif r is not None and r >= 60:
+        put_score += 10
+        put_reasons.append(f"RSI Alto ({r:.0f})")
 
-    # Decisão
-    if cs == ps or (cs == 0 and ps == 0):
-        return None
+    if st is not None and st >= 78:
+        put_score += 15
+        put_reasons.append(f"Estocástico Exaustão ({st:.0f})")
 
+    if _is_shooting_star(last):
+        put_score += 20
+        put_reasons.append("Estrela Cadente")
+    elif _is_bear_engulf(prev, last):
+        put_score += 25
+        put_reasons.append("Engolfo de Baixa")
+    elif curr_c < curr_o and (curr_h - curr_o) > abs(curr_c - curr_o) * 1.2:
+        put_score += 15
+        put_reasons.append("Pavio Superior de Rejeição")
+
+    # -------------------------------------------------------------
+    # SETUP 2: Tendência & Fluxo (Trend Following & Momentum)
+    # -------------------------------------------------------------
+    # CALL: EMA9 > EMA21 + Preço acima das EMAs + MACD positivo
+    if e9 and e21 and e9 > e21 and curr_c > e9:
+        trend_call_score = 25
+        trend_call_reasons = ["Tendência Alta (EMA9>EMA21)"]
+        if ml is not None and ms is not None and ml > ms:
+            trend_call_score += 20
+            trend_call_reasons.append("MACD Bullish")
+        if _three_consec(candles, "up"):
+            trend_call_score += 15
+            trend_call_reasons.append("Fluxo 3 Velas Verdes")
+        if r is not None and 50 <= r <= 68:
+            trend_call_score += 15
+            trend_call_reasons.append(f"RSI Favorável ({r:.0f})")
+        # Se o score de tendência for forte, junta ao call
+        if trend_call_score >= 45:
+            call_score += trend_call_score
+            call_reasons.extend(trend_call_reasons)
+
+    # PUT: EMA9 < EMA21 + Preço abaixo das EMAs + MACD negativo
+    if e9 and e21 and e9 < e21 and curr_c < e9:
+        trend_put_score = 25
+        trend_put_reasons = ["Tendência Baixa (EMA9<EMA21)"]
+        if ml is not None and ms is not None and ml < ms:
+            trend_put_score += 20
+            trend_put_reasons.append("MACD Bearish")
+        if _three_consec(candles, "down"):
+            trend_put_score += 15
+            trend_put_reasons.append("Fluxo 3 Velas Vermelhas")
+        if r is not None and 32 <= r <= 50:
+            trend_put_score += 15
+            trend_put_reasons.append(f"RSI Favorável ({r:.0f})")
+        if trend_put_score >= 45:
+            put_score += trend_put_score
+            put_reasons.extend(trend_put_reasons)
+
+    # -------------------------------------------------------------
+    # Decisão por Confluência Mínima
+    # -------------------------------------------------------------
     candle_time = int(candles[-1]["time"])
-    if cs > ps:
-        return ScannerSignal(asset, "CALL", min(99, round(cs / MAX_SCORE * 100)),
-                             timeframe, cr, candle_time)
-    return ScannerSignal(asset, "PUT",  min(99, round(ps / MAX_SCORE * 100)),
-                         timeframe, pr, candle_time)
+
+    # Exige confluência real: pelo menos 2 razões e pontuação >= 45
+    if call_score >= 45 and call_score > put_score and len(call_reasons) >= 2:
+        confidence = min(96, max(65, int(60 + (call_score / 120.0) * 36)))
+        return ScannerSignal(
+            asset=asset,
+            direction="CALL",
+            confidence=confidence,
+            timeframe=timeframe,
+            strategies=list(dict.fromkeys(call_reasons))[:4],
+            candle_time=candle_time,
+        )
+
+    if put_score >= 45 and put_score > call_score and len(put_reasons) >= 2:
+        confidence = min(96, max(65, int(60 + (put_score / 120.0) * 36)))
+        return ScannerSignal(
+            asset=asset,
+            direction="PUT",
+            confidence=confidence,
+            timeframe=timeframe,
+            strategies=list(dict.fromkeys(put_reasons))[:4],
+            candle_time=candle_time,
+        )
+
+    return None
 
 
 # ─── Formatador de mensagem Telegram (MarkdownV2) ─────────────────────────────
@@ -476,9 +529,15 @@ class SessionScanner:
                 self.signals_history = self.signals_history[-200:]
 
     def get_best_strategies(self, top_n: int = 15) -> List[dict]:
-        """Calcula assertividade histórica real de estratégias x paridade x timeframe."""
+        """Calcula assertividade histórica real de estratégias x paridade x timeframe.
+
+        Critérios de qualidade:
+          - Mínimo de 15 sinais passados para qualquer entrada aparecer no ranking.
+          - Expõe Expected Value (EV) real: EV = (winrate * payout/100) - (1 - winrate)
+            Estratégias com EV <= 0 são filtradas (sem vantagem matemática).
+          - Usa 48h de histórico para maior confiabilidade estatística.
+        """
         results = []
-        # ── Payout-first: só analisa ativos que atendam ao limiar configurado ──
         with self._lock:
             min_pay = self.min_payout
         if self.payouts:
@@ -494,46 +553,58 @@ class SessionScanner:
         for asset in assets_to_test[:10]:
             for tf in timeframes:
                 try:
-                    candles = db.query(asset, tf, 24, self.db_path)
-                    if len(candles) < 40:
+                    candles = db.query(asset, tf, 48, self.db_path)
+                    if len(candles) < 60:
                         continue
-                    
-                    # Backtest simples das estratégias individuais
-                    strat_stats = {}
-                    for strat_name in WEIGHTS:
-                        strat_stats[strat_name] = {"triggers": 0, "wins": 0}
 
-                    for i in range(35, len(candles) - 1):
-                        window = candles[:i+1]
-                        next_c = candles[i+1]
+                    # Backtest agrupado pelo setup principal detectado (strategies[0])
+                    setup_stats: Dict[str, Dict] = {}
+
+                    for i in range(50, len(candles) - 1):
+                        window = candles[:i + 1]
+                        next_c = candles[i + 1]
                         sig = analyse(asset, window, tf)
-                        if sig and sig.strategies:
-                            is_win = (sig.direction == "CALL" and next_c["close"] > next_c["open"]) or \
-                                     (sig.direction == "PUT" and next_c["close"] < next_c["open"])
-                            for s in sig.strategies:
-                                for s_name in WEIGHTS:
-                                    if s_name.lower() in s.lower():
-                                        strat_stats[s_name]["triggers"] += 1
-                                        if is_win:
-                                            strat_stats[s_name]["wins"] += 1
+                        if sig is None or not sig.strategies:
+                            continue
+                        is_win = (
+                            (sig.direction == "CALL" and next_c["close"] > next_c["open"]) or
+                            (sig.direction == "PUT"  and next_c["close"] < next_c["open"])
+                        )
+                        setup_key = sig.strategies[0]
+                        if setup_key not in setup_stats:
+                            setup_stats[setup_key] = {"triggers": 0, "wins": 0}
+                        setup_stats[setup_key]["triggers"] += 1
+                        if is_win:
+                            setup_stats[setup_key]["wins"] += 1
 
-                    for strat_name, st in strat_stats.items():
-                        if st["triggers"] >= 3:
-                            winrate = round((st["wins"] / st["triggers"]) * 100, 1)
-                            results.append({
-                                "asset": asset,
-                                "timeframe": tf,
-                                "strategy": strat_name,
-                                "winrate": winrate,
-                                "signals_count": st["triggers"],
-                                "wins": st["wins"],
-                                "losses": st["triggers"] - st["wins"],
-                                "payout": self.payouts.get(asset, 80),
-                            })
+                    payout_val = self.payouts.get(asset, 80)
+
+                    for setup_name, st in setup_stats.items():
+                        # Exige mínimo de 15 amostras para relevância estatística
+                        if st["triggers"] < 15:
+                            continue
+                        winrate = round((st["wins"] / st["triggers"]) * 100, 1)
+                        # EV = ganho esperado por operação (% do valor apostado)
+                        ev = round((winrate / 100 * payout_val) - ((1 - winrate / 100) * 100), 2)
+                        # Descarta setups com EV negativo ou neutro
+                        if ev <= 0:
+                            continue
+                        results.append({
+                            "asset":         asset,
+                            "timeframe":     tf,
+                            "strategy":      setup_name,
+                            "winrate":       winrate,
+                            "signals_count": st["triggers"],
+                            "wins":          st["wins"],
+                            "losses":        st["triggers"] - st["wins"],
+                            "payout":        payout_val,
+                            "ev":            ev,
+                        })
                 except Exception as e:
                     log.debug("Erro ao calcular melhores estratégias para %s/%s: %s", asset, tf, e)
 
-        results.sort(key=lambda x: (x["winrate"], x["signals_count"]), reverse=True)
+        # Ordena por EV descrescente, depois por amostragem
+        results.sort(key=lambda x: (x["ev"], x["signals_count"]), reverse=True)
         return results[:top_n]
 
     def get_signals(self, limit: int = 50) -> List[dict]:

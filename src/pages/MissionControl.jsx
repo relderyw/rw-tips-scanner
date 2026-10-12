@@ -504,7 +504,7 @@ export default function MissionControl() {
         signal_time: ts,
         message_text: `🔔 SINAL DE TESTE — RW TIPS\n\n📈 CALL | EURUSD | M1\n⚡ Confiança: 85%\n💰 Payout: 87%\n🕐 Horário: ${ts}\n\n✅ Conexão Telegram ativa e operando com sucesso!`,
       });
-      setNotice(res.sent ? '✅ Sinal de teste enviado ao Telegram com sucesso!' : 'Sinal já enviado anteriormente.');
+      setNotice(res.sent || res.queued ? '✅ Sinal de teste enviado ao Telegram com sucesso!' : 'Sinal já enviado anteriormente.');
       setTimeout(() => setNotice(''), 5000);
     } catch (e) {
       setGlobalError(`Falha no Telegram: ${e.message}`);

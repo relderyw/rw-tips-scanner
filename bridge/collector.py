@@ -438,20 +438,24 @@ class Collector(threading.Thread):
             ticker = (info.get("ticker") or "").strip()
             if not ticker or not info.get("is_open"):
                 continue
+            # Ignora ativos exóticos que a biblioteca não suporta candles
+            if ticker not in UNDERLYING_ASSESTS:
+                continue
             try:
                 payout = int(info.get("profit_percent") or 0)
                 normalized_id = int(active_id)
             except (TypeError, ValueError):
-                log.warning("Ignorando ativo binário com dados inválidos: %r", info)
+                continue
+            if payout <= 0 or payout >= 100:
                 continue
             name = (info.get("name") or "").strip()
             rows.append({
                 "asset": ticker,
                 "name": name or ticker,
                 "active_id": normalized_id,
-                "payout": payout if 0 < payout < 100 else None,
+                "payout": payout,
                 "is_open": True,
-                "candles_supported": ticker in UNDERLYING_ASSESTS,
+                "candles_supported": True,
             })
         return sorted(rows, key=lambda row: (-(row["payout"] or 0), row["asset"]))
 

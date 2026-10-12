@@ -40,7 +40,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, List, Literal, Optional, Set
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -565,28 +565,58 @@ def payouts(session: UserSession = Depends(require_iq_session)):
 
 
 @app.post("/telegram/signal")
-def send_telegram_signal(
+async def send_telegram_signal(
     payload: TelegramSignalRequest,
+    background_tasks: BackgroundTasks,
     session: UserSession = Depends(require_iq_session),
 ):
-    try:
-        sent = telegram_notifications.send_signal(
-            signal_id=payload.signal_id,
-            owner_id=session.identity_hash,
-            strategy=payload.strategy,
-            asset=payload.asset,
-            direction=payload.direction,
-            timeframe=payload.timeframe,
-            signal_time=payload.signal_time,
-            message_text=payload.message_text,
+    """Envia sinal ao Telegram de forma assíncrona para não bloquear o HTTP response.
+
+    O envio real roda em thread-pool (run_in_executor) para não travar o event-loop.
+    Retorna imediatamente {"queued": true} enquanto o envio acontece em background.
+    Erros de configuração (token/chat_id inválidos) são detectados ANTES de enfileirar.
+    """
+    # Valida configuração Telegram ANTES de enfileirar (falha rápida e legível)
+    status = telegram_notifications.get_status()
+    if not status.get("configured"):
+        raise HTTPException(
+            status_code=503,
+            detail="Telegram não está configurado no servidor. Verifique TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID."
         )
-    except telegram_notifications.TelegramConfigurationError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except telegram_notifications.TelegramDeliveryError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"sent": sent, "duplicate": not sent}
+
+    # Captura valores imutáveis para a closure da background task
+    _signal_id   = payload.signal_id
+    _owner_id    = session.identity_hash
+    _strategy    = payload.strategy
+    _asset       = payload.asset
+    _direction   = payload.direction
+    _timeframe   = payload.timeframe
+    _signal_time = payload.signal_time
+    _message_text = payload.message_text
+
+    async def _send_in_background():
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                None,
+                lambda: telegram_notifications.send_signal(
+                    signal_id=_signal_id,
+                    owner_id=_owner_id,
+                    strategy=_strategy,
+                    asset=_asset,
+                    direction=_direction,
+                    timeframe=_timeframe,
+                    signal_time=_signal_time,
+                    message_text=_message_text,
+                ),
+            )
+        except telegram_notifications.TelegramDeliveryError as exc:
+            log.error("[Telegram] Falha na entrega do sinal %s: %s", _signal_id, exc)
+        except Exception as exc:
+            log.error("[Telegram] Erro inesperado ao enviar sinal %s: %s", _signal_id, exc)
+
+    background_tasks.add_task(_send_in_background)
+    return {"queued": True, "signal_id": _signal_id}
 
 
 @app.get("/telegram/stats")

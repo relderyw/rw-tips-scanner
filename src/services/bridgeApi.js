@@ -103,7 +103,7 @@ export const fetchIQAccount = () => request('/account');
 export const fetchIQPositions = (limit = 100) =>
   request('/positions', { params: { limit } });
 export const sendTelegramSignal = (signal) =>
-  request('/telegram/signal', { method: 'POST', body: signal, timeoutMs: 20000 });
+  request('/telegram/signal', { method: 'POST', body: signal, timeoutMs: 8000 });
 export const updateTelegramSignalResult = (signal_id, outcome) =>
   request('/telegram/signal/result', { method: 'PUT', body: { signal_id, outcome }, timeoutMs: 12000 });
 export const fetchTelegramStatus = () => request('/telegram/status');
