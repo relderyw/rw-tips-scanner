@@ -193,6 +193,7 @@ const _mcPersisted = {
   assetsLastAt: null,
   backtest: { m1: 0, m5: 0, current: '', done: false },
   strategies: [],
+  strategiesLastAt: null,
   autoTrade: false,
   stake: '150.00',
   minConfidence: '80',
@@ -222,8 +223,10 @@ export default function MissionControl() {
   const [backtest, setBacktest] = useState(() => _mcPersisted.backtest);
 
   // Step 3
-  const [strategies, setStrategies]     = useState(() => _mcPersisted.strategies);
-  const [selectedAsset, setSelectedAsset] = useState(null);
+  const [strategies, setStrategies]         = useState(() => _mcPersisted.strategies);
+  const [strategiesLoading, setStrategiesLoading] = useState(false);
+  const [strategiesLastAt, setStrategiesLastAt]   = useState(() => _mcPersisted.strategiesLastAt);
+  const [selectedAsset, setSelectedAsset]   = useState(null);
 
   // Step 4
   const [autoTrade, setAutoTrade]       = useState(() => _mcPersisted.autoTrade);
@@ -234,9 +237,10 @@ export default function MissionControl() {
   const [configOpen, setConfigOpen]     = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
 
-  const refreshTimer = useRef(null);
-  const signalTimer  = useRef(null);
-  const minPayoutRef = useRef(minPayout);
+  const refreshTimer    = useRef(null);
+  const signalTimer     = useRef(null);
+  const strategiesTimer = useRef(null);
+  const minPayoutRef    = useRef(minPayout);
   useEffect(() => { minPayoutRef.current = minPayout; }, [minPayout]);
 
   // Sincroniza mudanças no cache global para não perder dados ao alternar abas
@@ -250,11 +254,12 @@ export default function MissionControl() {
     _mcPersisted.assetsLastAt = assetsLastAt;
     _mcPersisted.backtest = backtest;
     _mcPersisted.strategies = strategies;
+    _mcPersisted.strategiesLastAt = strategiesLastAt;
     _mcPersisted.autoTrade = autoTrade;
     _mcPersisted.stake = stake;
     _mcPersisted.minConfidence = minConfidence;
     _mcPersisted.signals = signals;
-  }, [connected, isSimulated, accountEmail, accountType, minPayout, topAssets, assetsLastAt, backtest, strategies, autoTrade, stake, minConfidence, signals]);
+  }, [connected, isSimulated, accountEmail, accountType, minPayout, topAssets, assetsLastAt, backtest, strategies, strategiesLastAt, autoTrade, stake, minConfidence, signals]);
 
   // STEP 1: carrega ativos top por payout
   const loadTopAssets = useCallback(async (threshold = minPayoutRef.current, force = false) => {
@@ -327,12 +332,39 @@ export default function MissionControl() {
       }
 
       clearInterval(tick);
-      if (Array.isArray(res)) setStrategies(res);
+      if (Array.isArray(res)) {
+        setStrategies(res);
+        const now = new Date();
+        setStrategiesLastAt(now);
+        _mcPersisted.strategies = res;
+        _mcPersisted.strategiesLastAt = now;
+      }
       setBacktest({ m1: 100, m5: 100, current: `${res?.length || 0} estratégias ranqueadas`, done: true });
     } catch (e) {
       setBacktest({ m1: 0, m5: 0, current: `Erro: ${e.message}`, done: false });
     }
   }, [topAssets, minPayout]);
+
+  // STEP 3: Atualização automática contínua do ranking de assertividade (a cada 20s)
+  const refreshStrategies = useCallback(async (silent = false) => {
+    if (!silent) setStrategiesLoading(true);
+    try {
+      if (getIQSessionToken()) {
+        const res = await fetchBestStrategies(20);
+        if (Array.isArray(res) && res.length > 0) {
+          setStrategies(res);
+          const now = new Date();
+          setStrategiesLastAt(now);
+          _mcPersisted.strategies = res;
+          _mcPersisted.strategiesLastAt = now;
+        }
+      }
+    } catch (e) {
+      console.warn('[MC] refreshStrategies:', e.message);
+    } finally {
+      if (!silent) setStrategiesLoading(false);
+    }
+  }, []);
 
   // Carrega sinais recentes
   const loadSignals = useCallback(async () => {
@@ -383,7 +415,12 @@ export default function MissionControl() {
 
     await runBacktest(sim);
     await loadSignals();
-  }, [minPayout, runBacktest, loadSignals]);
+    signalTimer.current     = setInterval(loadSignals, 3000);
+    strategiesTimer.current = setInterval(() => { refreshStrategies(true); }, 20000);
+    refreshTimer.current    = setInterval(() => {
+      loadTopAssets(minPayoutRef.current, false);
+    }, 30000);
+  }, [minPayout, runBacktest, loadSignals, refreshStrategies, loadTopAssets]);
 
   // Inicialização após conexão bem-sucedida
   const afterConnect = useCallback(async (session, acType) => {
@@ -416,12 +453,13 @@ export default function MissionControl() {
       await loadSignals();
     } catch (_) {}
 
-    signalTimer.current  = setInterval(loadSignals, 3000);
-    refreshTimer.current = setInterval(() => {
+    signalTimer.current     = setInterval(loadSignals, 3000);
+    strategiesTimer.current = setInterval(() => { refreshStrategies(true); }, 20000);
+    refreshTimer.current    = setInterval(() => {
       loadTopAssets(minPayoutRef.current, false);
     }, 30000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadTopAssets, runBacktest, loadSignals]);
+  }, [loadTopAssets, runBacktest, loadSignals, refreshStrategies]);
 
   // Alternar Auto-Trade sincronizando direto com o backend
   const handleToggleAutoTrade = async () => {
@@ -469,8 +507,10 @@ export default function MissionControl() {
           setAccountType(session.account_type || 'PRACTICE');
           liveFeed.connect();
           loadSignals();
-          signalTimer.current  = setInterval(loadSignals, 3000);
-          refreshTimer.current = setInterval(() => {
+          refreshStrategies(true);
+          signalTimer.current     = setInterval(loadSignals, 3000);
+          strategiesTimer.current = setInterval(() => { refreshStrategies(true); }, 20000);
+          refreshTimer.current    = setInterval(() => {
             loadTopAssets(minPayoutRef.current, false);
           }, 30000);
           return;
@@ -482,6 +522,7 @@ export default function MissionControl() {
     return () => {
       alive = false;
       clearInterval(signalTimer.current);
+      clearInterval(strategiesTimer.current);
       clearInterval(refreshTimer.current);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -491,6 +532,7 @@ export default function MissionControl() {
     setBusy(true);
     try { await disconnectIQAccount(); } catch (_) {}
     clearInterval(signalTimer.current);
+    clearInterval(strategiesTimer.current);
     clearInterval(refreshTimer.current);
     liveFeed.disconnect();
     invalidateCache();
@@ -499,10 +541,11 @@ export default function MissionControl() {
     _mcPersisted.connected = false;
     _mcPersisted.topAssets = [];
     _mcPersisted.strategies = [];
+    _mcPersisted.strategiesLastAt = null;
     _mcPersisted.signals = [];
     _mcPersisted.backtest = { m1: 0, m5: 0, current: '', done: false };
     setConnected(false); setAccountEmail('');
-    setTopAssets([]); setStrategies([]); setSignals([]);
+    setTopAssets([]); setStrategies([]); setSignals([]); setStrategiesLastAt(null);
     setBacktest({ m1: 0, m5: 0, current: '', done: false });
     setStatus({ bridgeOnline: false, iqConnected: false, health: null, activeAssets: [], payouts: {} });
     setBusy(false);
@@ -776,7 +819,30 @@ export default function MissionControl() {
       <section className="card p-5 border-line">
         <StepHeader num="3" title="Ranking de Assertividade"
           subtitle="Clique em qualquer ativo para ver o detalhe das estratégias"
-          status={step3Status} />
+          status={step3Status}>
+          {strategies.length > 0 && (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-[11px] font-bold text-emerald-400">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                Atualização Automática (20s)
+              </div>
+              {strategiesLastAt && (
+                <span className="text-[10px] text-zinc-500 font-mono hidden sm:inline" title="Última atualização do ranking">
+                  {new Date(strategiesLastAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => refreshStrategies(false)}
+                disabled={strategiesLoading}
+                className="btn-ghost text-xs px-2.5 py-1.5"
+                title="Atualizar ranking agora"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${strategiesLoading ? 'animate-spin text-neon' : ''}`} />
+              </button>
+            </div>
+          )}
+        </StepHeader>
 
         {strategies.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-8 text-zinc-500">
@@ -795,7 +861,7 @@ export default function MissionControl() {
                 </div>
                 <div className="space-y-1.5">
                   {list.map((s, i) => (
-                    <button key={i} type="button" onClick={() => setSelectedAsset(s.asset)}
+                    <button key={`${s.asset}-${s.strategy}-${tf}-${i}`} type="button" onClick={() => setSelectedAsset(s.asset)}
                       className="w-full flex items-center gap-3 rounded-xl bg-panel2 border border-line px-3 py-2.5 hover:border-neon/40 hover:bg-neon/[0.03] transition-all group text-left">
                       <span className={`flex-none w-6 text-center text-xs font-extrabold ${
                         i === 0 ? 'text-neon' : i === 1 ? 'text-emerald-400' : i === 2 ? 'text-yellow-400' : 'text-zinc-500'

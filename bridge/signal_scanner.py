@@ -564,8 +564,8 @@ class SessionScanner:
             assets_to_test = list(config.ASSET_IDS)
         timeframes = ["M1", "M5"]
 
-        # Limita aos top 5 ativos para responder em menos de 1 segundo sem travar a requisição
-        for asset in assets_to_test[:5]:
+        # Limita aos top 8 ativos para responder rápido mantendo o ranking completo
+        for asset in assets_to_test[:8]:
             for tf in timeframes:
                 try:
                     candles = db.query(asset, tf, 12, self.db_path)
