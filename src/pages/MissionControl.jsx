@@ -12,12 +12,15 @@ import {
   Settings2, Zap, Send, TrendingUp, ChevronRight, ChevronDown,
   RefreshCw, Wifi, WifiOff, Shield, AlertCircle, CheckCircle2,
   BarChart2, Activity, Clock, Target, Award, Unplug,
+  Ban, X, Plus, ShieldAlert,
 } from 'lucide-react';
 import {
   getIQSessionToken, connectIQAccount, disconnectIQAccount, fetchIQSession,
   fetchBridgeHealth, fetchBridgePayouts, switchIQAccountType,
   fetchScannerConfig, updateScannerConfig, fetchScannerSignals,
   fetchBestStrategies, sendTelegramSignal,
+  fetchScannerBlacklist, addAssetToBlacklist, removeAssetFromBlacklist,
+  fetchDailyAssetStats, sendTelegramDailySummary,
 } from '../services/bridgeApi.js';
 import { applyHealthSnapshot, setStatus } from '../services/dataStatus.js';
 import { liveFeed } from '../services/liveFeed.js';
@@ -198,6 +201,7 @@ const _mcPersisted = {
   stake: '150.00',
   minConfidence: '80',
   signals: [],
+  blacklist: [],
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -214,7 +218,16 @@ export default function MissionControl() {
   const [notice, setNotice]             = useState('');
 
   // Step 1
-  const [minPayout, setMinPayout]       = useState(() => _mcPersisted.minPayout);
+  const [minPayout, setMinPayout]       = useState(() => {
+    try {
+      const saved = localStorage.getItem('rwtips_min_payout');
+      if (saved) {
+        const n = parseInt(saved, 10);
+        if (n >= 50 && n <= 99) return n;
+      }
+    } catch (_) {}
+    return _mcPersisted.minPayout || 80;
+  });
   const [topAssets, setTopAssets]       = useState(() => _mcPersisted.topAssets);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [assetsLastAt, setAssetsLastAt] = useState(() => _mcPersisted.assetsLastAt);
@@ -237,9 +250,20 @@ export default function MissionControl() {
   const [configOpen, setConfigOpen]     = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
 
+  // Blacklist & Relatórios
+  const [blacklist, setBlacklist]       = useState(() => {
+    try {
+      const saved = localStorage.getItem('rwtips_blacklist');
+      return saved ? JSON.parse(saved) : (_mcPersisted.blacklist || []);
+    } catch (_) { return []; }
+  });
+  const [blacklistInput, setBlacklistInput] = useState('');
+  const [dailyStats, setDailyStats]     = useState(null);
+  const [sendingDailySummary, setSendingDailySummary] = useState(false);
+
   const refreshTimer    = useRef(null);
   const signalTimer     = useRef(null);
-  const strategiesTimer = useRef(null);
+  const dailyStatsTimer = useRef(null);
   const minPayoutRef    = useRef(minPayout);
   useEffect(() => { minPayoutRef.current = minPayout; }, [minPayout]);
 
@@ -259,7 +283,76 @@ export default function MissionControl() {
     _mcPersisted.stake = stake;
     _mcPersisted.minConfidence = minConfidence;
     _mcPersisted.signals = signals;
-  }, [connected, isSimulated, accountEmail, accountType, minPayout, topAssets, assetsLastAt, backtest, strategies, strategiesLastAt, autoTrade, stake, minConfidence, signals]);
+    _mcPersisted.blacklist = blacklist;
+  }, [connected, isSimulated, accountEmail, accountType, minPayout, topAssets, assetsLastAt, backtest, strategies, strategiesLastAt, autoTrade, stake, minConfidence, signals, blacklist]);
+
+  // Checa se o ativo está bloqueado na Blacklist
+  const isAssetBlacklisted = useCallback((astId) => {
+    if (!astId || !Array.isArray(blacklist)) return false;
+    const clean = String(astId).replace('-OTC', '').replace('-op', '').replace('(OTC)', '').replace('/', '').trim().toUpperCase();
+    return blacklist.some(b => String(b).replace('/', '').trim().toUpperCase() === clean);
+  }, [blacklist]);
+
+  // Adicionar ativo à Blacklist
+  const handleAddToBlacklist = async (assetToBlock) => {
+    const raw = (assetToBlock || blacklistInput).trim();
+    if (!raw) return;
+    const clean = raw.replace('-OTC', '').replace('-op', '').replace('(OTC)', '').replace('/', '').toUpperCase();
+    try {
+      const next = Array.from(new Set([...blacklist, clean]));
+      setBlacklist(next);
+      try { localStorage.setItem('rwtips_blacklist', JSON.stringify(next)); } catch (_) {}
+      setBlacklistInput('');
+      if (getIQSessionToken()) {
+        const res = await addAssetToBlacklist(clean);
+        if (Array.isArray(res?.blacklist)) setBlacklist(res.blacklist);
+      }
+      setNotice(`🚫 Ativo ${clean} adicionado à Blacklist! O robô não operará este par.`);
+      setTimeout(() => setNotice(''), 4000);
+    } catch (e) {
+      setGlobalError(`Falha ao adicionar à blacklist: ${e.message}`);
+    }
+  };
+
+  // Remover ativo da Blacklist
+  const handleRemoveFromBlacklist = async (assetToUnblock) => {
+    const clean = String(assetToUnblock).replace('-OTC', '').replace('-op', '').replace('(OTC)', '').replace('/', '').toUpperCase();
+    try {
+      const next = blacklist.filter(b => b.replace('/', '').toUpperCase() !== clean);
+      setBlacklist(next);
+      try { localStorage.setItem('rwtips_blacklist', JSON.stringify(next)); } catch (_) {}
+      if (getIQSessionToken()) {
+        const res = await removeAssetFromBlacklist(clean);
+        if (Array.isArray(res?.blacklist)) setBlacklist(res.blacklist);
+      }
+      setNotice(`✅ Ativo ${clean} removido da Blacklist e liberado para operações!`);
+      setTimeout(() => setNotice(''), 4000);
+    } catch (e) {
+      setGlobalError(`Falha ao remover da blacklist: ${e.message}`);
+    }
+  };
+
+  // Disparo manual do relatório diário de Greens/Reds para o Telegram
+  const handleSendDailySummary = async () => {
+    setSendingDailySummary(true);
+    setGlobalError('');
+    try {
+      if (isSimulated && !getIQSessionToken()) {
+        await new Promise(r => setTimeout(r, 600));
+        setNotice('✅ [Modo Demonstração] Relatório diário de Greens/Reds enviado ao Telegram com sucesso!');
+        setTimeout(() => setNotice(''), 4000);
+        return;
+      }
+      const res = await sendTelegramDailySummary();
+      if (res?.stats) setDailyStats(res.stats);
+      setNotice('✅ Relatório diário de Greens e Reds enviado com sucesso ao seu Telegram!');
+      setTimeout(() => setNotice(''), 5000);
+    } catch (e) {
+      setGlobalError(`Falha no envio do relatório ao Telegram: ${e.message}`);
+    } finally {
+      setSendingDailySummary(false);
+    }
+  };
 
   // STEP 1: carrega ativos top por payout
   const loadTopAssets = useCallback(async (threshold = minPayoutRef.current, force = false) => {
@@ -441,7 +534,17 @@ export default function MissionControl() {
       ]);
       applyHealthSnapshot(health, 'rest');
       setStatus({ payouts, payoutsAt: Date.now() });
-      const threshold = cfg?.min_payout || 80;
+      const savedPayout = (() => {
+        try {
+          const s = localStorage.getItem('rwtips_min_payout');
+          if (s) {
+            const n = parseInt(s, 10);
+            if (n >= 50 && n <= 99) return n;
+          }
+        } catch (_) {}
+        return null;
+      })();
+      const threshold = (cfg?.min_payout && cfg.min_payout >= 50) ? cfg.min_payout : (savedPayout || 80);
       setMinPayout(threshold);
       if (cfg?.stake)          setStake(String(cfg.stake));
       if (cfg?.min_confidence) setMinConfidence(String(cfg.min_confidence));
@@ -486,6 +589,7 @@ export default function MissionControl() {
   const handlePayoutChange = (val) => {
     const num = Number(val);
     setMinPayout(num);
+    try { localStorage.setItem('rwtips_min_payout', String(num)); } catch (_) {}
     loadTopAssets(num, true);
     if (getIQSessionToken()) {
       updateScannerConfig({ min_payout: num }).catch(() => {});
@@ -567,17 +671,25 @@ export default function MissionControl() {
   const handleSaveConfig = async () => {
     setConfigSaving(true);
     try {
+      try {
+        localStorage.setItem('rwtips_min_payout', String(minPayout));
+        localStorage.setItem('rwtips_stake', String(stake));
+        localStorage.setItem('rwtips_min_confidence', String(minConfidence));
+        localStorage.setItem('rwtips_auto_trade', String(autoTrade));
+        localStorage.setItem('rwtips_blacklist', JSON.stringify(blacklist));
+      } catch (_) {}
       await updateScannerConfig({
         auto_trade: autoTrade,
         stake: parseFloat(stake) || 2.0,
         min_confidence: parseInt(minConfidence, 10) || 75,
         min_payout: minPayout,
+        blacklist: blacklist,
         enabled: true,
       });
-      setNotice('Configurações salvas e aplicadas no scanner da IQ Option!');
+      setNotice(`✅ Configurações salvas e aplicadas! O robô só operará em ativos com Payout ≥ ${minPayout}%.`);
       setTimeout(() => setNotice(''), 4000);
       setConfigOpen(false);
-      await loadTopAssets(minPayout);
+      await loadTopAssets(minPayout, true);
       await runBacktest();
     } catch (e) { setGlobalError(e.message); }
     finally { setConfigSaving(false); }
@@ -760,17 +872,41 @@ export default function MissionControl() {
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 mt-1">
-            {topAssets.map((asset, i) => (
-              <button key={asset.id} type="button" onClick={() => setSelectedAsset(asset.id)}
-                className="group flex flex-col items-center rounded-xl bg-panel2 border border-line p-3 gap-1 hover:border-neon/50 hover:bg-neon/[0.04] transition-all text-center">
-                <span className="text-[10px] font-bold text-zinc-500">#{i + 1}</span>
-                <span className="font-bold text-white text-xs leading-tight">{asset.name || asset.id}</span>
-                <span className={`text-base font-extrabold font-mono ${payoutColor(asset.payout)}`}>{asset.payout}%</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${asset.isOpen ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
-                  {asset.isOpen ? 'ABERTO' : 'FECHADO'}</span>
-                <ChevronRight className="h-3 w-3 text-zinc-600 group-hover:text-neon transition-colors mt-0.5" />
-              </button>
-            ))}
+            {topAssets.map((asset, i) => {
+              const blocked = isAssetBlacklisted(asset.id);
+              return (
+                <div key={asset.id}
+                  onClick={() => setSelectedAsset(asset.id)}
+                  className={`group relative flex flex-col items-center rounded-xl bg-panel2 border p-3 gap-1 transition-all text-center cursor-pointer ${
+                    blocked ? 'border-red-500/40 opacity-75' : 'border-line hover:border-neon/50 hover:bg-neon/[0.04]'
+                  }`}>
+                  <span className="text-[10px] font-bold text-zinc-500">#{i + 1}</span>
+                  <span className={`font-bold text-xs leading-tight ${blocked ? 'line-through text-zinc-400' : 'text-white'}`}>
+                    {asset.name || asset.id}
+                  </span>
+                  <span className={`text-base font-extrabold font-mono ${payoutColor(asset.payout)}`}>{asset.payout}%</span>
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${asset.isOpen ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'}`}>
+                      {asset.isOpen ? 'ABERTO' : 'FECHADO'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        blocked ? handleRemoveFromBlacklist(asset.id) : handleAddToBlacklist(asset.id);
+                      }}
+                      className={`text-[9px] px-1.5 py-0.5 rounded font-bold transition-all border ${
+                        blocked
+                          ? 'bg-red-500/20 text-red-300 border-red-500/40 hover:bg-red-500/30'
+                          : 'bg-zinc-800 text-zinc-400 hover:text-red-400 hover:border-red-500/40 border-transparent'
+                      }`}
+                      title={blocked ? "Remover da Blacklist" : "Bloquear na Blacklist"}>
+                      {blocked ? '🚫 Bloqueado' : '🚫 Bloquear'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -914,6 +1050,12 @@ export default function MissionControl() {
             {testingTelegram ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
             Testar Telegram
           </button>
+          <button type="button" onClick={handleSendDailySummary} disabled={sendingDailySummary}
+            className="btn-ghost text-xs px-3 py-1.5 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+            title="Enviar Relatório Diário de Greens & Reds ao Telegram">
+            {sendingDailySummary ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BarChart2 className="h-3.5 w-3.5" />}
+            Resumo Greens/Reds
+          </button>
           <button type="button" onClick={() => setConfigOpen(v => !v)}
             className={`btn-ghost text-xs px-3 py-1.5 ${configOpen ? 'border-neon/50 text-neon' : ''}`}>
             <Settings2 className="h-3.5 w-3.5" />
@@ -961,13 +1103,84 @@ export default function MissionControl() {
                 Cada sinal ≥ {minConfidence}% conf e ≥ {minPayout}% payout abrirá uma ordem de ${stake} na conta <strong>{isDemo ? 'DEMO' : 'REAL'}</strong>.
               </p>
             )}
-            <div className="flex justify-end gap-2">
+
+            {/* Gerenciamento de Blacklist */}
+            <div className="pt-3 border-t border-line/60">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
+                  <ShieldAlert className="h-3.5 w-3.5 text-red-400" />
+                  <span>Blacklist de Ativos ({blacklist.length})</span>
+                </div>
+                <span className="text-[10px] text-zinc-500">Ativos bloqueados são totalmente ignorados pelo scanner</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mb-2.5 min-h-[34px] p-2 rounded-lg bg-panel border border-line">
+                {blacklist.length === 0 ? (
+                  <span className="text-[11px] text-zinc-500 italic py-0.5">Nenhum ativo bloqueado no momento.</span>
+                ) : (
+                  blacklist.map(item => (
+                    <span key={item} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono font-bold">
+                      <Ban className="h-3 w-3" />
+                      {item}
+                      <button type="button" onClick={() => handleRemoveFromBlacklist(item)}
+                        className="hover:text-white transition-colors ml-0.5 p-0.5" title={`Remover ${item} da Blacklist`}>
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))
+                )}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Digitar ativo (ex: EURUSD, USDJPY-OTC)..."
+                  value={blacklistInput}
+                  onChange={e => setBlacklistInput(e.target.value.toUpperCase())}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddToBlacklist(); } }}
+                  className="input text-xs font-mono flex-1 uppercase"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleAddToBlacklist()}
+                  className="btn-ghost text-xs px-3 py-1.5 border-red-500/30 text-red-400 hover:bg-red-500/10 flex items-center gap-1">
+                  <Plus className="h-3.5 w-3.5" />
+                  Bloquear
+                </button>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-line/60">
               <button type="button" onClick={() => setConfigOpen(false)} className="btn-ghost text-xs px-4 py-2">Cancelar</button>
               <button type="button" disabled={configSaving} onClick={handleSaveConfig} className="btn-primary text-xs px-4 py-2">
                 {configSaving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                 Salvar e Aplicar
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Alerta de ativos com sequência de LOSS */}
+        {dailyStats && Object.entries(dailyStats).some(([_, s]) => s.consecutive_losses >= 3) && (
+          <div className="mb-4 space-y-2">
+            {Object.entries(dailyStats)
+              .filter(([ast, s]) => s.consecutive_losses >= 3 && !isAssetBlacklisted(ast))
+              .map(([ast, s]) => (
+                <div key={ast} className="flex items-center justify-between p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs">
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert className="h-4 w-4 text-red-400 shrink-0" />
+                    <div>
+                      <span className="font-bold text-white">{ast}</span> acumulou <strong className="text-red-400">{s.consecutive_losses} LOSS seguidos</strong> hoje ({s.losses} Reds / {s.wins} Greens).
+                      <span className="text-zinc-400 block text-[11px]">Não está respeitando o padrão. Deseja adicionar à Blacklist?</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleAddToBlacklist(ast)}
+                    className="btn-ghost text-xs px-3 py-1 bg-red-500/20 border-red-500/40 text-red-300 hover:bg-red-500/30 flex items-center gap-1">
+                    <Ban className="h-3 w-3" />
+                    Bloquear na Blacklist
+                  </button>
+                </div>
+              ))}
           </div>
         )}
 
@@ -1009,6 +1222,19 @@ export default function MissionControl() {
                       <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider">
                         OTC
                       </span>
+                    )}
+                    {isAssetBlacklisted(sig.asset) ? (
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/40 uppercase tracking-wider flex items-center gap-0.5">
+                        <Ban className="h-2.5 w-2.5" /> BLOQUEADO
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleAddToBlacklist(sig.asset); }}
+                        className="text-[9px] font-semibold px-1 py-0.5 rounded bg-panel hover:bg-red-500/20 text-zinc-500 hover:text-red-400 border border-line hover:border-red-500/40 transition-colors"
+                        title="Bloquear este ativo na Blacklist">
+                        🚫 Bloquear
+                      </button>
                     )}
                     <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-bold">{sig.timeframe}</span>
                     <span className={`text-[10px] font-bold ${confColor(sig.confidence)}`}>{sig.confidence}% conf</span>

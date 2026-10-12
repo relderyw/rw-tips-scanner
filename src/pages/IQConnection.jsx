@@ -78,7 +78,10 @@ export default function IQConnection() {
           setAutoTrade(Boolean(scannerCfg.auto_trade));
           if (scannerCfg.stake) setStake(String(scannerCfg.stake));
           if (scannerCfg.min_confidence) setMinConfidence(String(scannerCfg.min_confidence));
-          if (scannerCfg.min_payout) setMinPayout(String(scannerCfg.min_payout));
+          if (scannerCfg.min_payout) {
+            setMinPayout(String(scannerCfg.min_payout));
+            try { localStorage.setItem('rwtips_min_payout', String(scannerCfg.min_payout)); } catch (_) {}
+          }
         }
         if (Array.isArray(stratList)) setBestStrategies(stratList);
         if (Array.isArray(sigList)) setSignals(sigList);
@@ -157,6 +160,7 @@ export default function IQConnection() {
     setNotice('');
     try {
       const payoutThreshold = parseInt(minPayout, 10) || 80;
+      try { localStorage.setItem('rwtips_min_payout', String(payoutThreshold)); } catch (_) {}
       const res = await updateScannerConfig({
         auto_trade: autoTrade,
         stake: parseFloat(stake) || 2.0,

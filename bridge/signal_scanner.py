@@ -12,7 +12,9 @@ Não executa trades. Não tem estado próprio de conexão.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+from pathlib import Path
 import re
 import threading
 import time
@@ -25,6 +27,25 @@ import db
 import telegram_notifications
 
 log = logging.getLogger("signal_scanner")
+
+CONFIG_PATH = Path(__file__).parent / "data" / "scanner_config.json"
+
+def _load_persisted_config() -> dict:
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        log.warning("Falha ao ler scanner_config.json: %s", e)
+    return {}
+
+def _save_persisted_config(cfg: dict) -> None:
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception as e:
+        log.warning("Falha ao gravar scanner_config.json: %s", e)
 
 # ─── Configuração ─────────────────────────────────────────────────────────────
 MIN_CONFIDENCE: int  = int(__import__("os").getenv("SCANNER_MIN_CONFIDENCE", "70"))
@@ -374,14 +395,110 @@ class SessionScanner:
         # Sinais emitidos nesta sessão (para /scanner/signals)
         self.signals_history: List[dict] = []
         self._enabled = True
-        self.auto_trade: bool = __import__("os").getenv("AUTO_TRADE", "false").lower() == "true"
-        self.stake: float = float(__import__("os").getenv("DEFAULT_STAKE", "2.0"))
-        self.min_confidence: int = int(__import__("os").getenv("DEFAULT_MIN_CONF", str(MIN_CONFIDENCE)))
-        self.min_payout: int = MIN_PAYOUT
-        self.max_gales: int = int(__import__("os").getenv("MAX_GALES", "1"))
-        self.gale_multiplier: float = float(__import__("os").getenv("GALE_MULTIPLIER", "2.0"))
+
+        persisted = _load_persisted_config()
+        self.auto_trade: bool = persisted.get("auto_trade", __import__("os").getenv("AUTO_TRADE", "false").lower() == "true")
+        self.stake: float = float(persisted.get("stake", __import__("os").getenv("DEFAULT_STAKE", "2.0")))
+        self.min_confidence: int = int(persisted.get("min_confidence", __import__("os").getenv("DEFAULT_MIN_CONF", str(MIN_CONFIDENCE))))
+        self.min_payout: int = int(persisted.get("min_payout", MIN_PAYOUT))
+        self.max_gales: int = int(persisted.get("max_gales", __import__("os").getenv("MAX_GALES", "1")))
+        self.gale_multiplier: float = float(persisted.get("gale_multiplier", __import__("os").getenv("GALE_MULTIPLIER", "2.0")))
+        self.blacklist: set = set(persisted.get("blacklist", []))
         # Cache em memória RAM das últimas velas para latência zero (sem bater no disco a cada vela)
         self._candles_cache: Dict[Tuple[str, str], deque] = {}
+
+    def _normalize_asset(self, asset: str) -> str:
+        return asset.replace("-OTC", "").replace("-op", "").replace("(OTC)", "").replace("/", "").strip().upper()
+
+    def is_blacklisted(self, asset: str) -> bool:
+        if not asset or not self.blacklist:
+            return False
+        clean = self._normalize_asset(asset)
+        with self._lock:
+            for b in self.blacklist:
+                if self._normalize_asset(b) == clean or b.upper() == asset.upper():
+                    return True
+        return False
+
+    def add_to_blacklist(self, asset: str) -> list:
+        clean = self._normalize_asset(asset)
+        with self._lock:
+            self.blacklist.add(clean)
+            _save_persisted_config({
+                "auto_trade": self.auto_trade,
+                "stake": self.stake,
+                "min_confidence": self.min_confidence,
+                "min_payout": self.min_payout,
+                "max_gales": self.max_gales,
+                "gale_multiplier": self.gale_multiplier,
+                "blacklist": sorted(list(self.blacklist)),
+            })
+            log.info("[%s] 🚫 Ativo %s adicionado à BLACKLIST", self.session_token[:8], clean)
+            return sorted(list(self.blacklist))
+
+    def remove_from_blacklist(self, asset: str) -> list:
+        clean = self._normalize_asset(asset)
+        with self._lock:
+            self.blacklist = {b for b in self.blacklist if self._normalize_asset(b) != clean and b.upper() != asset.upper()}
+            _save_persisted_config({
+                "auto_trade": self.auto_trade,
+                "stake": self.stake,
+                "min_confidence": self.min_confidence,
+                "min_payout": self.min_payout,
+                "max_gales": self.max_gales,
+                "gale_multiplier": self.gale_multiplier,
+                "blacklist": sorted(list(self.blacklist)),
+            })
+            log.info("[%s] ✅ Ativo %s removido da BLACKLIST", self.session_token[:8], clean)
+            return sorted(list(self.blacklist))
+
+    def get_blacklist(self) -> list:
+        with self._lock:
+            return sorted(list(self.blacklist))
+
+    def get_payout(self, asset_id: str) -> int:
+        """Obtém o payout em tempo real do ativo, consultando o Collector e a IQ Option."""
+        candidates = [asset_id]
+        clean = asset_id.replace("-OTC", "").replace("-op", "").replace("(OTC)", "").strip()
+        candidates.extend([clean, f"{clean}-OTC", f"{clean}-op"])
+
+        # 1. Consulta dict vivo do Collector
+        if self.collector and hasattr(self.collector, "payouts") and self.collector.payouts:
+            for c in candidates:
+                p = self.collector.payouts.get(c)
+                if p and isinstance(p, (int, float)) and p > 0:
+                    return int(p)
+            resolved = getattr(self.collector, "asset_resolved", {}).get(asset_id)
+            if resolved:
+                p = self.collector.payouts.get(resolved)
+                if p and isinstance(p, (int, float)) and p > 0:
+                    return int(p)
+
+        # 2. Consulta self.payouts local
+        if self.payouts:
+            for c in candidates:
+                p = self.payouts.get(c)
+                if p and isinstance(p, (int, float)) and p > 0:
+                    return int(p)
+
+        # 3. Consulta direta no client da IQ Option se conectado
+        if self.collector and getattr(self.collector, "client", None) and getattr(self.collector, "connected", False):
+            try:
+                from iqoptionapi.constants import InstrumentType
+                client = self.collector.client
+                actives = client.get_actives(InstrumentType.BINARY_OPTION) or {}
+                for act_id_int, info in actives.items():
+                    ticker = (info.get("ticker") or "").strip()
+                    if ticker in candidates:
+                        pp = client.get_profit_percent(int(act_id_int)) or info.get("profit_percent", 0)
+                        if pp and 0 < int(pp) < 100:
+                            if self.collector and hasattr(self.collector, "payouts"):
+                                self.collector.payouts[asset_id] = int(pp)
+                            return int(pp)
+            except Exception as e:
+                log.debug("get_payout consulta direta falhou para %s: %s", asset_id, e)
+
+        return 0
 
     def on_candle_closed(self, asset_id: str, tf: str, candle: dict) -> None:
         """
@@ -391,9 +508,21 @@ class SessionScanner:
         if not self._enabled:
             return
 
-        # Verifica payout mínimo
-        payout = self.payouts.get(asset_id, 0)
-        if payout and payout < self.min_payout:
+        # 🚫 Verifica se o ativo está na BLACKLIST configurada pelo usuário
+        if self.is_blacklisted(asset_id):
+            log.info(
+                "[%s] 🚫 Ativo %s está na BLACKLIST. Análise e entradas bloqueadas.",
+                self.session_token[:8], asset_id,
+            )
+            return
+
+        # Verifica payout mínimo de forma estrita (payout deve ser >= min_payout)
+        payout = self.get_payout(asset_id)
+        if payout < self.min_payout:
+            log.info(
+                "[%s] ⏸ Vela %s/%s ignorada: payout atual (%d%%) menor que o mínimo exigido (%d%%)",
+                self.session_token[:8], asset_id, tf, payout, self.min_payout,
+            )
             return
 
         # ⚡ Cache em RAM: busca no SQLite apenas na 1ª vez; depois alimenta em memória instantaneamente
@@ -416,7 +545,7 @@ class SessionScanner:
         if sig is None or sig.confidence < self.min_confidence:
             return
 
-        sig.payout = payout if payout else 80
+        sig.payout = payout
 
         # Cooldown — evita spam do mesmo sinal
         key = (asset_id, tf, sig.direction)
@@ -431,6 +560,26 @@ class SessionScanner:
         self._emit(sig)
 
     def _emit(self, sig: ScannerSignal) -> None:
+        # Checagem estrita de payout antes de qualquer ordem ou envio ao Telegram
+        current_payout = self.get_payout(sig.asset)
+        effective_payout = current_payout if current_payout > 0 else (sig.payout if sig.payout > 0 else 0)
+        sig.payout = effective_payout
+
+        # 🚫 Checagem de Blacklist
+        if self.is_blacklisted(sig.asset):
+            log.warning(
+                "[%s] 🛑 Entrada e sinal bloqueados para %s: ativo consta na BLACKLIST.",
+                self.session_token[:8], sig.asset,
+            )
+            return
+
+        if effective_payout < self.min_payout:
+            log.warning(
+                "[%s] 🛑 Entrada e sinal bloqueados para %s: payout atual (%d%%) menor que o mínimo configurado (%d%%)",
+                self.session_token[:8], sig.asset, effective_payout, self.min_payout,
+            )
+            return
+
         # ⚡ PRIORIDADE MÁXIMA: Dispara trade imediatamente para cravar a abertura da vela no PONTO A
         order_info = ""
         trade_status = "not_executed"
@@ -444,6 +593,7 @@ class SessionScanner:
                     direction=sig.direction,
                     expiry=tf_exp,
                     amount=self.stake,
+                    min_payout=self.min_payout,
                 )
                 if ok:
                     trade_status = "executed"
@@ -797,6 +947,7 @@ class SessionScanner:
         min_payout: Optional[int] = None,
         max_gales: Optional[int] = None,
         gale_multiplier: Optional[float] = None,
+        blacklist: Optional[List[str]] = None,
     ):
         with self._lock:
             if auto_trade is not None:
@@ -811,6 +962,18 @@ class SessionScanner:
                 self.max_gales = int(max_gales)
             if gale_multiplier is not None and 1.0 <= gale_multiplier <= 5.0:
                 self.gale_multiplier = float(gale_multiplier)
+            if blacklist is not None:
+                self.blacklist = {self._normalize_asset(b) for b in blacklist if b}
+
+            _save_persisted_config({
+                "auto_trade": self.auto_trade,
+                "stake": self.stake,
+                "min_confidence": self.min_confidence,
+                "min_payout": self.min_payout,
+                "max_gales": self.max_gales,
+                "gale_multiplier": self.gale_multiplier,
+                "blacklist": sorted(list(self.blacklist)),
+            })
 
     def get_config(self) -> dict:
         with self._lock:
@@ -821,9 +984,107 @@ class SessionScanner:
                 "min_payout": self.min_payout,
                 "max_gales": self.max_gales,
                 "gale_multiplier": self.gale_multiplier,
+                "blacklist": sorted(list(self.blacklist)),
                 "enabled": self._enabled,
                 "account_type": getattr(self.collector, "account_type", "PRACTICE") if self.collector else "PRACTICE",
             }
+
+    def get_daily_asset_stats(self) -> dict:
+        """Calcula estatísticas de greens e reds por ativo no dia de hoje (ou últimas 24h)."""
+        asset_stats: Dict[str, Dict] = {}
+        for aid in config.ASSET_IDS:
+            clean = self._normalize_asset(aid)
+            disp = f"{clean[:3]}/{clean[3:]}" if len(clean) == 6 else clean
+            asset_stats[clean] = {
+                "asset": disp,
+                "raw_id": aid,
+                "wins": 0,
+                "losses": 0,
+                "consecutive_losses": 0,
+                "current_streak_type": None,
+                "current_streak": 0,
+                "winrate": 0.0,
+                "blacklisted": self.is_blacklisted(aid),
+            }
+
+        # 1. Analisa sinais emitidos nesta sessão
+        with self._lock:
+            recent_sigs = list(self.signals_history)
+
+        for sig in recent_sigs:
+            raw = sig.get("asset", "")
+            clean = self._normalize_asset(raw)
+            if clean not in asset_stats:
+                disp = sig.get("display_name") or clean
+                asset_stats[clean] = {
+                    "asset": disp,
+                    "raw_id": raw,
+                    "wins": 0,
+                    "losses": 0,
+                    "consecutive_losses": 0,
+                    "current_streak_type": None,
+                    "current_streak": 0,
+                    "winrate": 0.0,
+                    "blacklisted": self.is_blacklisted(raw),
+                }
+
+            st = str(sig.get("trade_status", "")).lower()
+            lbl = str(sig.get("result_label", "")).lower()
+            is_win = "win" in st or "win" in lbl
+            is_loss = "loss" in st or "loss" in lbl
+
+            if is_win:
+                asset_stats[clean]["wins"] += 1
+                if asset_stats[clean]["current_streak_type"] == "win":
+                    asset_stats[clean]["current_streak"] += 1
+                else:
+                    asset_stats[clean]["current_streak_type"] = "win"
+                    asset_stats[clean]["current_streak"] = 1
+                asset_stats[clean]["consecutive_losses"] = 0
+            elif is_loss:
+                asset_stats[clean]["losses"] += 1
+                if asset_stats[clean]["current_streak_type"] == "loss":
+                    asset_stats[clean]["current_streak"] += 1
+                else:
+                    asset_stats[clean]["current_streak_type"] = "loss"
+                    asset_stats[clean]["current_streak"] = 1
+                asset_stats[clean]["consecutive_losses"] = asset_stats[clean]["current_streak"]
+
+        # 2. Se a sessão acabou de iniciar e tiver poucos sinais registrados, complementa com ranking de assertividade
+        total_recorded = sum(s["wins"] + s["losses"] for s in asset_stats.values())
+        if total_recorded < 5:
+            try:
+                best_strats = self.get_best_strategies(top_n=20)
+                for bs in best_strats:
+                    raw = bs.get("asset", "")
+                    clean = self._normalize_asset(raw)
+                    if clean in asset_stats:
+                        asset_stats[clean]["wins"] += int(bs.get("wins", 0))
+                        asset_stats[clean]["losses"] += int(bs.get("losses", 0))
+            except Exception as e:
+                log.debug("Erro ao complementar estatísticas do dia: %s", e)
+
+        # 3. Calcula winrates e ordena greens e reds
+        for clean, data in asset_stats.items():
+            tot = data["wins"] + data["losses"]
+            data["winrate"] = round((data["wins"] / tot * 100), 1) if tot > 0 else 0.0
+            data["blacklisted"] = self.is_blacklisted(clean)
+
+        active_items = [v for v in asset_stats.values() if (v["wins"] + v["losses"]) > 0]
+        top_greens = sorted(active_items, key=lambda x: (x["wins"], x["winrate"]), reverse=True)
+        top_reds = sorted(active_items, key=lambda x: (x["losses"], -x["winrate"]), reverse=True)
+
+        total_greens = sum(v["wins"] for v in asset_stats.values())
+        total_reds = sum(v["losses"] for v in asset_stats.values())
+
+        return {
+            "top_greens": top_greens,
+            "top_reds": top_reds,
+            "total_greens": total_greens,
+            "total_reds": total_reds,
+            "asset_stats": asset_stats,
+            "blacklist": sorted(list(self.blacklist)),
+        }
 
     def enable(self):
         self._enabled = True

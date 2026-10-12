@@ -175,12 +175,23 @@ class Collector(threading.Thread):
         except Exception as listener_err:
             log.error("Listener de vela falhou (%s/%s): %s", asset_id, tf_id, listener_err)
 
-    def execute_trade(self, asset: str, direction: str, expiry: int = 1, amount: float = 2.0):
+    def execute_trade(self, asset: str, direction: str, expiry: int = 1, amount: float = 2.0, min_payout: int = 0):
         """Executa entrada na IQ Option (binária ou digital) com ultra-baixa latência."""
         client = self.client
         if not self.connected or client is None:
             return False, "Cliente IQ Option não conectado"
         try:
+            # Proteção estrita de payout mínimo antes de abrir qualquer ordem na corretora
+            if min_payout > 0 and self.payouts:
+                current_p = self.payouts.get(asset, 0)
+                if not current_p:
+                    resolved = self.asset_resolved.get(asset)
+                    if resolved:
+                        current_p = self.payouts.get(resolved, 0)
+                if current_p > 0 and current_p < min_payout:
+                    log.warning("🛑 Trade bloqueado em %s: payout atual (%d%%) menor que o mínimo configurado (%d%%)", asset, current_p, min_payout)
+                    return False, f"Payout ({current_p}%) menor que o mínimo configurado ({min_payout}%)"
+
             dir_enum = Direction.CALL if direction.upper() == "CALL" else Direction.PUT
 
             # Prioridade direta: se o ativo já foi resolvido e está ativo, usa direto
@@ -1133,10 +1144,10 @@ class Collector(threading.Thread):
                 self.asset_is_open[pid] = bool(info_for_open.get("is_open", self.asset_is_open[pid]))
             if payout is not None:
                 new_payouts[pid] = payout
-        # Merge: preserva valores antigos se IQ não devolveu nada (não zero valores!).
-        merged = dict(self.payouts)
-        merged.update(new_payouts)
-        self.payouts = merged
+                if iq_name:
+                    new_payouts[iq_name] = payout
+        # Merge: preserva valores antigos se IQ não devolveu nada e mantém a referência do dict viva
+        self.payouts.update(new_payouts)
         self._last_payout_refresh = time.time()
         log.info("Payouts atualizados. %d ativos com valor informado pela IQ.", len(new_payouts))
 

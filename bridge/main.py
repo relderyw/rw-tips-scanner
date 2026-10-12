@@ -390,6 +390,7 @@ class ScannerConfigRequest(BaseModel):
     max_gales: Optional[int] = None
     gale_multiplier: Optional[float] = None
     enabled: Optional[bool] = None
+    blacklist: Optional[List[str]] = None
 
 
 class TelegramSignalRequest(BaseModel):
@@ -508,8 +509,65 @@ def update_scanner_config(payload: ScannerConfigRequest, session: UserSession = 
         min_payout=payload.min_payout,
         max_gales=payload.max_gales,
         gale_multiplier=payload.gale_multiplier,
+        blacklist=payload.blacklist,
     )
     return scanner.get_config()
+
+
+class BlacklistActionRequest(BaseModel):
+    asset: str
+    action: Literal["add", "remove"] = "add"
+
+
+@app.get("/scanner/blacklist")
+def get_scanner_blacklist(session: UserSession = Depends(require_iq_session)):
+    """Retorna os ativos atualmente bloqueados pelo usuário na Blacklist."""
+    scanner = _get_or_create_scanner(session)
+    if not scanner:
+        return {"blacklist": []}
+    return {"blacklist": scanner.get_blacklist()}
+
+
+@app.post("/scanner/blacklist")
+def manage_scanner_blacklist(payload: BlacklistActionRequest, session: UserSession = Depends(require_iq_session)):
+    """Adiciona ou remove um ativo da Blacklist."""
+    scanner = _get_or_create_scanner(session)
+    if not scanner:
+        raise HTTPException(status_code=503, detail="Scanner indisponível.")
+    if payload.action == "add":
+        items = scanner.add_to_blacklist(payload.asset)
+    else:
+        items = scanner.remove_from_blacklist(payload.asset)
+    return {"blacklist": items}
+
+
+@app.get("/scanner/daily-stats")
+def get_daily_asset_stats(session: UserSession = Depends(require_iq_session)):
+    """Retorna o placar diário de Greens e Reds por ativo e sequências de perdas."""
+    scanner = _get_or_create_scanner(session)
+    if not scanner:
+        return {"top_greens": [], "top_reds": [], "total_greens": 0, "total_reds": 0, "asset_stats": {}, "blacklist": []}
+    return scanner.get_daily_asset_stats()
+
+
+@app.post("/telegram/daily-summary")
+def send_telegram_daily_summary(session: UserSession = Depends(require_iq_session)):
+    """Envia relatório formatado com os ativos que mais deram Green e Red ao Telegram."""
+    scanner = _get_or_create_scanner(session)
+    if not scanner:
+        raise HTTPException(status_code=503, detail="Scanner indisponível.")
+    stats = scanner.get_daily_asset_stats()
+    ok = telegram_notifications.send_daily_ranking(
+        owner_id=session.identity_hash,
+        top_greens=stats.get("top_greens", []),
+        top_reds=stats.get("top_reds", []),
+        total_greens=stats.get("total_greens", 0),
+        total_reds=stats.get("total_reds", 0),
+        blacklisted_assets=stats.get("blacklist", []),
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail="Falha ao entregar relatório ao Telegram (verifique token e chat_id).")
+    return {"sent": True, "stats": stats}
 
 
 @app.get("/scanner/best-strategies")

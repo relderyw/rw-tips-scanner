@@ -412,3 +412,80 @@ def send_gale_alert(
     except Exception:
         return False
 
+
+def send_daily_ranking(
+    *,
+    owner_id: str,
+    top_greens: list,
+    top_reds: list,
+    total_greens: int,
+    total_reds: int,
+    blacklisted_assets: list = None,
+) -> bool:
+    """Envia mensagem personalizada ao Telegram com os ativos que mais deram Green e Red no dia atual."""
+    try:
+        bot_token, chat_id = _get_configuration()
+    except Exception:
+        return False
+
+    now_str = time.strftime("%d/%m/%Y às %H:%M")
+    total_ops = total_greens + total_reds
+    winrate_geral = round((total_greens / total_ops * 100), 1) if total_ops > 0 else 0.0
+
+    lines = [
+        "🏆 *RANKING DIÁRIO — RW TIPS SCANNER*",
+        f"📅 *Relatório:* `{_escape_md(now_str)}`",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "🟢 *TOP ATIVOS COM MAIS GREENS (WINS):*",
+    ]
+
+    if top_greens:
+        for idx, item in enumerate(top_greens[:5], start=1):
+            num_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"][idx - 1] if idx <= 5 else f"{idx}."
+            asset = item.get("asset", "")
+            wins = item.get("wins", 0)
+            losses = item.get("losses", 0)
+            wr = item.get("winrate", 0.0)
+            lines.append(f"{num_emoji} *{_escape_md(asset)}:* `{wins} W` \\| `{losses} L` \\(`{wr}%` winrate\\)")
+    else:
+        lines.append("  _Nenhum ativo com greens registrado ainda hoje\\._")
+
+    lines.append("")
+    lines.append("🔴 *TOP ATIVOS COM MAIS REDS (LOSSES):*")
+    if top_reds:
+        for idx, item in enumerate(top_reds[:5], start=1):
+            num_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"][idx - 1] if idx <= 5 else f"{idx}."
+            asset = item.get("asset", "")
+            losses = item.get("losses", 0)
+            wins = item.get("wins", 0)
+            wr = item.get("winrate", 0.0)
+            warning_tag = " ⚠️" if losses >= 3 else ""
+            lines.append(f"{num_emoji} *{_escape_md(asset)}:*{warning_tag} `{losses} L` \\| `{wins} W` \\(`{wr}%` winrate\\)")
+    else:
+        lines.append("  _Nenhum ativo com excesso de perdas hoje\\! 🚀_")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📊 *PLACAR GERAL DO DIA:* {total_greens}🟢 \\| {total_reds}🔴 \\({_escape_md(str(winrate_geral))}% Assertividade\\)")
+
+    if blacklisted_assets:
+        bl_str = ", ".join(blacklisted_assets[:8])
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"🚫 *Blacklist Ativa:* `{_escape_md(bl_str)}`")
+        lines.append("_(Estes ativos estão 100% pausados pelo robô)_")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("💡 _Dica: Ativos na lista de Reds podem ser colocados na Blacklist diretamente pelo painel para proteger sua banca\\._")
+
+    message_text = "\n".join(lines)
+
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message_text, "parse_mode": "MarkdownV2"},
+            timeout=10,
+        )
+        return resp.ok
+    except Exception:
+        return False
+
+

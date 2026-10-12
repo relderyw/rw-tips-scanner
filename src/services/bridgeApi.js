@@ -82,6 +82,21 @@ export const updateScannerConfig = (config) =>
 export const fetchBestStrategies = (top_n = 15) =>
   request('/scanner/best-strategies', { params: { top_n } });
 
+export const fetchScannerBlacklist = () =>
+  request('/scanner/blacklist');
+
+export const addAssetToBlacklist = (asset) =>
+  request('/scanner/blacklist', { method: 'POST', body: { asset, action: 'add' } });
+
+export const removeAssetFromBlacklist = (asset) =>
+  request('/scanner/blacklist', { method: 'POST', body: { asset, action: 'remove' } });
+
+export const fetchDailyAssetStats = () =>
+  request('/scanner/daily-stats');
+
+export const sendTelegramDailySummary = () =>
+  request('/telegram/daily-summary', { method: 'POST' });
+
 export async function fetchIQSession() {
   return request('/session');
 }
