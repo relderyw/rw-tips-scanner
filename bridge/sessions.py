@@ -43,8 +43,25 @@ class IQSessionManager:
         identity_hash = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()
         with self._lock:
             active_token = self._identity_to_token.get(identity_hash)
-            if active_token in self._sessions:
-                raise ValueError("Esta conta IQ Option já está conectada.")
+            existing_session = self._sessions.get(active_token) if active_token else None
+            if existing_session and existing_session.collector.connected:
+                # Sessão já ativa e saudável: reutiliza imediatamente sem bloquear o usuário
+                existing_session.last_used = time.time()
+                if account_type:
+                    try:
+                        self.switch_account_type(existing_session.token, account_type)
+                    except Exception:
+                        pass
+                return existing_session
+            elif existing_session:
+                # Sessão anterior desconectada ou zumbi: limpa antes de criar nova
+                try:
+                    existing_session.collector.stop()
+                except Exception:
+                    pass
+                signal_scanner.unregister(existing_session.token)
+                self._sessions.pop(existing_session.token, None)
+                self._identity_to_token.pop(identity_hash, None)
 
         token = secrets.token_urlsafe(32)
         base_path = config.DB_PATH
@@ -86,11 +103,15 @@ class IQSessionManager:
 
         session = UserSession(token, normalized_email, identity_hash, collector, time.time())
         with self._lock:
-            active_token = self._identity_to_token.get(identity_hash)
-            if active_token in self._sessions:
-                collector.stop()
-                signal_scanner.unregister(token)
-                raise ValueError("Esta conta IQ Option já está conectada.")
+            old_token = self._identity_to_token.get(identity_hash)
+            if old_token and old_token in self._sessions and old_token != token:
+                old_session = self._sessions.pop(old_token, None)
+                if old_session:
+                    try:
+                        old_session.collector.stop()
+                    except Exception:
+                        pass
+                    signal_scanner.unregister(old_token)
             self._sessions[token] = session
             self._identity_to_token[identity_hash] = token
         return session
