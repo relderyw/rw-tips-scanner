@@ -82,6 +82,12 @@ def require_iq_session(cred: HTTPAuthorizationCredentials = Depends(bearer)):
     return session
 
 
+def optional_iq_session(cred: HTTPAuthorizationCredentials = Depends(bearer)) -> Optional[UserSession]:
+    if not cred or not cred.credentials:
+        return None
+    return session_manager.get(cred.credentials)
+
+
 # ===================================================================
 # Gerenciamento de clientes WebSocket (conectados e autenticados)
 # ===================================================================
@@ -315,14 +321,14 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "ok", "app": "RW TIPS Bridge", "version": "1.1.0"}
 
 
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 def ping():
-    return {"ping": "pong"}
+    return {"status": "ok", "ping": "pong"}
 
 
 # ===================================================================
@@ -650,18 +656,21 @@ def update_telegram_signal_result(
     return {"updated": updated, "duplicate": not updated}
 
 
-@app.api_route("/ping", methods=["GET", "HEAD"])
-def ping():
-    """Endpoint público para monitoramento externo (UptimeRobot, etc).
-    Não requer autenticação. Aceita GET e HEAD.
+@app.api_route("/health", methods=["GET", "HEAD"])
+@app.api_route("/app-health", methods=["GET", "HEAD"])
+def health(session: Optional[UserSession] = Depends(optional_iq_session)):
+    """Health check do backend. Aceita GET e HEAD (para UptimeRobot e outros monitores).
+    Se autenticado com token IQ, retorna snapshot detalhado da sessão.
+    Se não autenticado (ex: monitor externo), retorna 200 OK com status geral da aplicação.
     """
-    return {"status": "ok"}
-
-
-@app.get("/health")
-@app.get("/app-health")
-def health(session: UserSession = Depends(require_iq_session)):
-    return session.collector.health_snapshot()
+    if session:
+        return session.collector.health_snapshot()
+    return {
+        "status": "ok",
+        "app": "RW TIPS Bridge",
+        "authenticated": False,
+        "active_sessions": len(session_manager.all_sessions()),
+    }
 
 
 @app.get("/account")
