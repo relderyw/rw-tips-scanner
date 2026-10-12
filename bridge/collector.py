@@ -169,6 +169,12 @@ class Collector(threading.Thread):
         if fn in self._candle_listeners:
             self._candle_listeners.remove(fn)
 
+    def _safe_dispatch_listener(self, fn, asset_id: str, tf_id: str, candle: dict) -> None:
+        try:
+            fn(asset_id, tf_id, candle)
+        except Exception as listener_err:
+            log.error("Listener de vela falhou (%s/%s): %s", asset_id, tf_id, listener_err)
+
     def execute_trade(self, asset: str, direction: str, expiry: int = 1, amount: float = 2.0):
         """Executa entrada na IQ Option (binária ou digital) para a conta conectada."""
         client = self.client
@@ -179,20 +185,16 @@ class Collector(threading.Thread):
             dir_enum = Direction.CALL if direction.upper() == "CALL" else Direction.PUT
 
             # Monta lista de tickers candidatos na IQ Option em ordem de prioridade:
-            # 1) Resolução ativa detectada pelo collector (ex: GBPUSD-OTC quando normal está fechado)
             candidates = []
             resolved = self.asset_resolved.get(asset)
             if resolved and resolved not in candidates:
                 candidates.append(resolved)
-            # 2) Candidatos configurados em config.ASSET_IQ_NAMES
             for cand in config.ASSET_IQ_NAMES.get(asset, []):
                 if cand not in candidates:
                     candidates.append(cand)
-            # 3) O próprio asset informado
             if asset not in candidates:
                 candidates.append(asset)
-            # 4) Variações com sufixo -OTC e -op
-            for suffix in ("-OTC", "-op"):
+            for suffix in ("-OTC",):
                 c_suf = f"{asset}{suffix}"
                 if c_suf not in candidates:
                     candidates.append(c_suf)
@@ -204,6 +206,15 @@ class Collector(threading.Thread):
             prioritized = [c for c in candidates if c in UNDERLYING_ASSESTS]
             if not prioritized:
                 prioritized = candidates
+
+            # Prioriza ativos que comprovadamente estão abertos e com payout > 0 agora
+            if self.payouts:
+                open_with_payout = [c for c in prioritized if self.payouts.get(c, 0) > 0]
+                if open_with_payout:
+                    prioritized = open_with_payout
+
+            # Limita a no máximo 2 tentativas rápidas para nunca prender o sistema
+            prioritized = prioritized[:2]
 
             last_error = None
             for cand in prioritized:
@@ -818,16 +829,19 @@ class Collector(threading.Thread):
         # 1) Persistência.
         db.upsert(asset_id, tf_id, [candle], self.db_path)
 
-        # 1.1) Notifica listeners registrados (ex: scanner de sinais)
-        for listener in list(self._candle_listeners):
-            try:
-                listener(asset_id, tf_id, candle)
-            except Exception as listener_err:
-                log.error("Listener de vela falhou (%s/%s): %s", asset_id, tf_id, listener_err)
-
-        # 2) Atualiza métricas globais do stream.
+        # 2) Atualiza métricas globais do stream imediatamente (para que o watchdog nunca marque como stale).
         self.stream_last_candle_ts[sk] = int(candle["time"])
         self.stream_last_seen[sk] = received_at
+
+        # 3) Notifica listeners registrados (ex: scanner de sinais) de forma não-bloqueante
+        # para que o auto-trade e a análise técnica nunca travem a thread de gravação/watchdog.
+        for listener in list(self._candle_listeners):
+            threading.Thread(
+                target=self._safe_dispatch_listener,
+                args=(listener, asset_id, tf_id, candle),
+                daemon=True,
+                name=f"candle-cb-{asset_id}-{tf_id}",
+            ).start()
         # latency_ms = tempo entre fechamento esperado e recebimento.
         # fechamento esperado = candle.time (abertura) + tf_sec (duração).
         expected_close_ts = candle["time"] + tf_sec
