@@ -295,40 +295,34 @@ export default function MissionControl() {
   const loadSignals = useCallback(async () => {
     if (getIQSessionToken()) {
       try {
-        const res = await fetchScannerSignals(15);
-        if (Array.isArray(res) && res.length > 0) {
+        const res = await fetchScannerSignals(20);
+        if (Array.isArray(res)) {
           setSignals(res);
           return;
         }
       } catch (_) {}
+      return;
     }
-    // Sinais demonstrativos caso ainda não haja histórico no SQLite
-    const nowSec = Math.floor(Date.now() / 1000);
-    setSignals(prev => prev.length > 0 ? prev : [
-      {
-        signal_id: 'sig_demo_1',
-        asset: 'EURUSD',
-        direction: 'CALL',
-        timeframe: 'M1',
-        confidence: 84,
-        payout: 87,
-        strategies: ['EMA Cross 9/21', 'Bollinger Reversal'],
-        sent_at: nowSec - 90,
-        status: 'sent',
-      },
-      {
-        signal_id: 'sig_demo_2',
-        asset: 'GBPUSD',
-        direction: 'PUT',
-        timeframe: 'M5',
-        confidence: 79,
-        payout: 85,
-        strategies: ['RSI 14 Oversold', 'MACD Momentum'],
-        sent_at: nowSec - 320,
-        status: 'sent',
-      },
-    ]);
-  }, []);
+    // Apenas para modo de demonstração isolado
+    if (isSimulated) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      setSignals([
+        {
+          signal_id: 'sig_demo_1',
+          asset: 'EURUSD',
+          direction: 'CALL',
+          timeframe: 'M1',
+          confidence: 84,
+          payout: 87,
+          strategies: ['EMA Cross 9/21', 'Bollinger Reversal'],
+          sent_at: nowSec - 90,
+          status: 'simulado',
+        },
+      ]);
+    } else {
+      setSignals([]);
+    }
+  }, [isSimulated]);
 
   // Iniciar Modo Demonstração sem credenciais
   const handleStartSimulation = useCallback(async () => {
@@ -379,10 +373,41 @@ export default function MissionControl() {
       await loadSignals();
     } catch (_) {}
 
-    signalTimer.current  = setInterval(loadSignals, 15000);
-    refreshTimer.current = setInterval(() => loadTopAssets(minPayout), 300000);
+    signalTimer.current  = setInterval(loadSignals, 5000);
+    refreshTimer.current = setInterval(() => loadTopAssets(minPayout), 180000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadTopAssets, runBacktest, loadSignals]);
+
+  // Alternar Auto-Trade sincronizando direto com o backend
+  const handleToggleAutoTrade = async () => {
+    const nextVal = !autoTrade;
+    setAutoTrade(nextVal);
+    if (getIQSessionToken()) {
+      try {
+        await updateScannerConfig({
+          auto_trade: nextVal,
+          stake: parseFloat(stake) || 2.0,
+          min_confidence: parseInt(minConfidence, 10) || 75,
+          min_payout: minPayout,
+          enabled: true,
+        });
+        setNotice(nextVal ? '⚡ Auto-Trade ATIVADO no servidor da IQ Option!' : 'Auto-Trade DESATIVADO no servidor.');
+        setTimeout(() => setNotice(''), 4000);
+      } catch (err) {
+        setGlobalError(`Falha ao sincronizar Auto-Trade: ${err.message}`);
+      }
+    }
+  };
+
+  // Alteração de payout mínimo sincronizando com o backend e recarregando ativos
+  const handlePayoutChange = (val) => {
+    const num = Number(val);
+    setMinPayout(num);
+    loadTopAssets(num);
+    if (getIQSessionToken()) {
+      updateScannerConfig({ min_payout: num }).catch(() => {});
+    }
+  };
 
   // Verifica sessão já ativa ao montar
   useEffect(() => {
@@ -438,8 +463,9 @@ export default function MissionControl() {
         stake: parseFloat(stake) || 2.0,
         min_confidence: parseInt(minConfidence, 10) || 75,
         min_payout: minPayout,
+        enabled: true,
       });
-      setNotice('Configurações salvas! Recarregando ativos e backtest…');
+      setNotice('Configurações salvas e aplicadas no scanner da IQ Option!');
       setTimeout(() => setNotice(''), 4000);
       setConfigOpen(false);
       await loadTopAssets(minPayout);
@@ -588,7 +614,7 @@ export default function MissionControl() {
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 whitespace-nowrap">Mín:</span>
             <input type="range" min="50" max="99" step="1" value={minPayout}
-              onChange={e => setMinPayout(Number(e.target.value))}
+              onChange={e => handlePayoutChange(e.target.value)}
               className="w-28 accent-neon" />
             <span className="text-neon font-mono font-bold text-sm w-12 text-right">≥ {minPayout}%</span>
           </div>
@@ -760,7 +786,7 @@ export default function MissionControl() {
               </div>
               <div className="flex flex-col justify-end">
                 <label className="block text-xs font-semibold text-zinc-300 mb-1">Auto-Trade</label>
-                <button type="button" onClick={() => setAutoTrade(v => !v)}
+                <button type="button" onClick={handleToggleAutoTrade}
                   className={`w-full py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-2 border transition-all ${
                     autoTrade ? 'bg-neon/15 text-neon border-neon/40 shadow-glowSm' : 'bg-panel text-zinc-400 border-line'
                   }`}>
@@ -775,7 +801,7 @@ export default function MissionControl() {
                 <span className="text-neon font-mono font-bold text-sm">≥ {minPayout}%</span>
               </div>
               <input type="range" min="50" max="99" step="1" value={minPayout}
-                onChange={e => setMinPayout(Number(e.target.value))} className="w-full accent-neon" />
+                onChange={e => handlePayoutChange(e.target.value)} className="w-full accent-neon" />
             </div>
             {autoTrade && (
               <p className="text-xs text-yellow-400 flex items-start gap-1.5 rounded-lg bg-yellow-400/5 border border-yellow-400/20 p-2.5">
@@ -795,10 +821,23 @@ export default function MissionControl() {
 
         {/* Sinais recentes */}
         {signals.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 py-8 text-zinc-500">
-            <Target className="h-8 w-8" />
-            <span className="text-sm">Aguardando sinais do scanner…</span>
-            <span className="text-xs">O scanner analisa cada vela fechada dos ativos filtrados.</span>
+          <div className="flex flex-col items-center gap-2.5 py-8 text-center">
+            <div className="relative flex h-12 w-12 items-center justify-center rounded-2xl bg-neon/10 border border-neon/30 shadow-glow mb-1">
+              <Target className="h-6 w-6 text-neon animate-pulse" />
+            </div>
+            <span className="text-sm font-bold text-white">Scanner Ativo & Monitorando Velas em Tempo Real</span>
+            <p className="text-xs text-zinc-400 max-w-lg leading-relaxed">
+              O robô analisa cada fechamento de vela (M1 e M5) dos ativos abertos.
+              Assim que um padrão alcançar confluência técnica ≥ {minConfidence}%, o sinal será gerado imediatamente,
+              despachado ao Telegram e executado {autoTrade ? `com ordem de $${stake} no Auto-Trade` : '(Auto-Trade desligado)'}.
+            </p>
+            {minPayout > 88 && (
+              <div className="text-[11px] text-yellow-400/90 bg-yellow-400/10 border border-yellow-400/20 px-3 py-2 rounded-lg max-w-lg text-left mt-1">
+                <strong>💡 Nota sobre Payout (≥ {minPayout}%):</strong> Pares de Forex tradicionais (como EUR/USD e GBP/USD) normalmente pagam entre 82% e 88%.
+                Com o filtro em ≥ {minPayout}%, apenas ativos de altíssimo payout (como índices exóticos) são aceitos.
+                Se desejar que o robô também opere pares clássicos, ajuste o Payout Mínimo para 80%–85%.
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -817,18 +856,30 @@ export default function MissionControl() {
                     <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-bold">{sig.timeframe}</span>
                     <span className={`text-[10px] font-bold ${confColor(sig.confidence)}`}>{sig.confidence}% conf</span>
                     <span className={`text-[10px] font-bold ${payoutColor(sig.payout)}`}>{sig.payout}% pay</span>
+                    {sig.order_info && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded font-bold bg-neon/10 text-neon border border-neon/20">
+                        {sig.order_info}
+                      </span>
+                    )}
                   </div>
                   <div className="text-[10px] text-zinc-500 truncate mt-0.5">
                     {(sig.strategies || []).join(' · ')}
                   </div>
                 </div>
                 <div className="flex-none text-right">
-                  <div className="flex items-center gap-1 text-[10px] text-zinc-500">
+                  <div className="flex items-center gap-1 text-[10px] text-zinc-500 justify-end">
                     <Clock className="h-3 w-3" />
                     {sig.sent_at ? new Date(sig.sent_at * 1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '--:--'}
                   </div>
-                  <div className={`text-[10px] font-bold mt-0.5 ${sig.status === 'sent' ? 'text-neon' : sig.status === 'error' ? 'text-red-400' : 'text-zinc-500'}`}>
-                    {sig.status === 'sent' ? '✓ Enviado' : sig.status === 'error' ? '✗ Erro' : sig.status}
+                  <div className="flex items-center gap-2 mt-0.5 justify-end">
+                    <span className={`text-[10px] font-bold ${sig.status === 'sent' ? 'text-neon' : sig.status === 'error' ? 'text-red-400' : 'text-zinc-500'}`}>
+                      {sig.status === 'sent' ? '📱 Telegram OK' : sig.status === 'error' ? '📱 Erro Telegram' : sig.status}
+                    </span>
+                    {sig.trade_status === 'executed' ? (
+                      <span className="text-[10px] font-extrabold text-neon">⚡ Trade OK</span>
+                    ) : sig.trade_status && sig.trade_status.startsWith('failed') ? (
+                      <span className="text-[10px] font-bold text-yellow-400" title={sig.trade_status}>⚠️ Falha Trade</span>
+                    ) : null}
                   </div>
                 </div>
               </div>
