@@ -216,13 +216,15 @@ export default function MissionControl() {
 
   const refreshTimer = useRef(null);
   const signalTimer  = useRef(null);
+  const minPayoutRef = useRef(minPayout);
+  useEffect(() => { minPayoutRef.current = minPayout; }, [minPayout]);
 
   // STEP 1: carrega ativos top por payout
-  const loadTopAssets = useCallback(async (threshold) => {
+  const loadTopAssets = useCallback(async (threshold = minPayoutRef.current, force = false) => {
     setAssetsLoading(true);
     try {
       if (getIQSessionToken()) {
-        const top = await refreshTopPayoutActives(threshold, 10);
+        const top = await refreshTopPayoutActives(threshold, 10, force);
         setTopAssets(Array.isArray(top) ? top : []);
       } else {
         const sim = ASSETS.filter(a => a.payout >= threshold)
@@ -232,8 +234,12 @@ export default function MissionControl() {
         setTopAssets(sim);
       }
       setAssetsLastAt(new Date());
-    } catch (e) { console.warn('[MC] loadTopAssets:', e.message); }
-    finally { setAssetsLoading(false); }
+    } catch (e) {
+      console.warn('[MC] loadTopAssets:', e.message);
+      setAssetsLastAt(new Date());
+    } finally {
+      setAssetsLoading(false);
+    }
   }, []);
 
   // STEP 2+3: backtest via bridge ou simulação local
@@ -373,8 +379,10 @@ export default function MissionControl() {
       await loadSignals();
     } catch (_) {}
 
-    signalTimer.current  = setInterval(loadSignals, 5000);
-    refreshTimer.current = setInterval(() => loadTopAssets(minPayout), 180000);
+    signalTimer.current  = setInterval(loadSignals, 3000);
+    refreshTimer.current = setInterval(() => {
+      loadTopAssets(minPayoutRef.current, false);
+    }, 30000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadTopAssets, runBacktest, loadSignals]);
 
@@ -403,7 +411,7 @@ export default function MissionControl() {
   const handlePayoutChange = (val) => {
     const num = Number(val);
     setMinPayout(num);
-    loadTopAssets(num);
+    loadTopAssets(num, true);
     if (getIQSessionToken()) {
       updateScannerConfig({ min_payout: num }).catch(() => {});
     }
@@ -609,7 +617,7 @@ export default function MissionControl() {
          ══════════════════════════════════════════ */}
       <section className="card p-5 border-line">
         <StepHeader num="1" title="Ativos Abertos por Payout"
-          subtitle={assetsLastAt ? `Atualizado ${assetsLastAt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} · cache 5 min` : 'Buscando…'}
+          subtitle={assetsLastAt ? `Atualizado ${assetsLastAt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})} · auto 30s` : 'Buscando…'}
           status={step1Status}>
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 whitespace-nowrap">Mín:</span>
@@ -618,12 +626,25 @@ export default function MissionControl() {
               className="w-28 accent-neon" />
             <span className="text-neon font-mono font-bold text-sm w-12 text-right">≥ {minPayout}%</span>
           </div>
-          <button type="button" disabled={assetsLoading} onClick={() => loadTopAssets(minPayout)}
+          <button type="button" disabled={assetsLoading} onClick={() => loadTopAssets(minPayout, true)}
             className="btn-ghost text-xs px-3 py-1.5">
             <RefreshCw className={`h-3.5 w-3.5 ${assetsLoading ? 'animate-spin' : ''}`} />
             Recarregar
           </button>
         </StepHeader>
+
+        {minPayout > 88 && (
+          <div className="mb-4 flex items-start gap-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 p-3 text-xs text-amber-300">
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+            <div className="leading-relaxed">
+              <strong>⚠️ Payout configurado em ≥ {minPayout}%:</strong> Os pares tradicionais e OTC de Forex (como <strong>EUR/USD, GBP/USD, USD/JPY</strong>) pagam entre <strong>80% e 87%</strong> na IQ Option. Com o filtro atual, os pares de moedas não aparecem.{' '}
+              <button type="button" onClick={() => handlePayoutChange(82)}
+                className="inline-flex items-center gap-1 font-bold text-amber-200 underline hover:text-white cursor-pointer ml-1">
+                Ajustar para ≥ 82% agora
+              </button>
+            </div>
+          </div>
+        )}
 
         {assetsLoading && topAssets.length === 0 ? (
           <div className="flex items-center justify-center gap-3 py-8 text-zinc-500">
@@ -757,6 +778,13 @@ export default function MissionControl() {
         <StepHeader num="4" title="Scanner de Sinais & Auto-Trade"
           subtitle="Sinais gerados com base nos critérios e enviados ao Telegram antes de cada vela"
           status={step4Status}>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-neon/10 border border-neon/30 text-[11px] font-bold text-neon">
+            <span className="h-2 w-2 rounded-full bg-neon animate-pulse" />
+            Scanner Ativo (3s)
+          </div>
+          <button type="button" onClick={loadSignals} className="btn-ghost text-xs px-2.5 py-1.5" title="Verificar sinais agora">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
           <button type="button" onClick={handleTestTelegram} disabled={testingTelegram}
             className="btn-ghost text-xs px-3 py-1.5">
             {testingTelegram ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}

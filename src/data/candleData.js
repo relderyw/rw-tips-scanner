@@ -132,11 +132,11 @@ export function getTopPayoutAssets(limit = 10, minPayout = 0) {
  * 3. É idempotente — chamadas concorrentes são debounced.
  */
 let _topRefreshPromise = null;
-export async function refreshTopPayoutActives(minPayout = 70, limit = 10) {
+export async function refreshTopPayoutActives(minPayout = 70, limit = 10, force = false) {
   if (!bridgeEnabled || !getIQSessionToken()) return [];
-  if (_topRefreshPromise) return _topRefreshPromise;
+  if (!force && _topRefreshPromise) return _topRefreshPromise;
   _topRefreshPromise = (async () => {
-    const rows = await fetchTopPayoutActives(minPayout, limit);
+    const rows = await fetchTopPayoutActives(minPayout, limit, force);
     if (!Array.isArray(rows)) return [];
     const topAssets = rows
       .filter((row) => typeof row?.asset === 'string' && row.asset.length > 0)

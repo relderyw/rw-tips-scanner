@@ -520,31 +520,36 @@ def binary_option_actives(session: UserSession = Depends(require_iq_session)):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-# Cache para /actives/top: evita chamar binary_option_actives() a cada requisicao
+# Cache para /actives/top: evita chamar binary_option_actives() em excesso
 _top_actives_cache: Dict[str, dict] = {}  # key = session_token
 _top_actives_lock  = threading.Lock()
-TOP_ACTIVES_TTL    = 300  # 5 minutos
+TOP_ACTIVES_TTL    = 60   # 1 minuto (atualização mais frequente)
 
 
 @app.get("/actives/top")
 def binary_option_top_actives(
     min_payout: int = Query(70, ge=0, le=100),
     limit: int = Query(10, ge=1, le=50),
+    force: bool = Query(False),
     session: UserSession = Depends(require_iq_session),
 ):
-    """Retorna os `limit` ativos com MAIOR payout acima de `min_payout`%, cache 5 min."""
+    """Retorna os `limit` ativos com MAIOR payout acima de `min_payout`%, cache 60s (ou forçado)."""
     token = session.token
     now   = time.time()
     with _top_actives_lock:
         entry = _top_actives_cache.get(token)
-        if entry and now - entry["ts"] < TOP_ACTIVES_TTL:
+        if entry and not force and (now - entry["ts"] < TOP_ACTIVES_TTL):
             actives_raw = entry["data"]
         else:
             try:
                 actives_raw = session.collector.binary_option_actives()
-            except ConnectionError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            _top_actives_cache[token] = {"ts": now, "data": actives_raw}
+                _top_actives_cache[token] = {"ts": now, "data": actives_raw}
+            except Exception as exc:
+                if entry:
+                    # Em caso de timeout temporário da IQ, usa cache existente com segurança
+                    actives_raw = entry["data"]
+                else:
+                    raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     filtered = [
         a for a in actives_raw
