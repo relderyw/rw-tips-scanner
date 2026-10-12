@@ -180,36 +180,56 @@ function AssetModal({ asset, strategies, onClose }) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  Cache global em memória para persistir parâmetros e dados entre abas
+// ════════════════════════════════════════════════════════════════════════════
+const _mcPersisted = {
+  initialized: false,
+  connected: false,
+  isSimulated: false,
+  accountEmail: '',
+  accountType: 'PRACTICE',
+  minPayout: 80,
+  topAssets: [],
+  assetsLastAt: null,
+  backtest: { m1: 0, m5: 0, current: '', done: false },
+  strategies: [],
+  autoTrade: false,
+  stake: '150.00',
+  minConfidence: '80',
+  signals: [],
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 //  MISSION CONTROL — Componente principal
 // ════════════════════════════════════════════════════════════════════════════
 export default function MissionControl() {
   // Conexão
-  const [connected, setConnected]       = useState(false);
-  const [isSimulated, setIsSimulated]   = useState(false);
-  const [accountEmail, setAccountEmail] = useState('');
-  const [accountType, setAccountType]   = useState('PRACTICE');
+  const [connected, setConnected]       = useState(() => _mcPersisted.connected);
+  const [isSimulated, setIsSimulated]   = useState(() => _mcPersisted.isSimulated);
+  const [accountEmail, setAccountEmail] = useState(() => _mcPersisted.accountEmail);
+  const [accountType, setAccountType]   = useState(() => _mcPersisted.accountType);
   const [busy, setBusy]                 = useState(false);
   const [globalError, setGlobalError]   = useState('');
   const [notice, setNotice]             = useState('');
 
   // Step 1
-  const [minPayout, setMinPayout]       = useState(80);
-  const [topAssets, setTopAssets]       = useState([]);
+  const [minPayout, setMinPayout]       = useState(() => _mcPersisted.minPayout);
+  const [topAssets, setTopAssets]       = useState(() => _mcPersisted.topAssets);
   const [assetsLoading, setAssetsLoading] = useState(false);
-  const [assetsLastAt, setAssetsLastAt] = useState(null);
+  const [assetsLastAt, setAssetsLastAt] = useState(() => _mcPersisted.assetsLastAt);
 
   // Step 2
-  const [backtest, setBacktest] = useState({ m1: 0, m5: 0, current: '', done: false });
+  const [backtest, setBacktest] = useState(() => _mcPersisted.backtest);
 
   // Step 3
-  const [strategies, setStrategies]     = useState([]);
+  const [strategies, setStrategies]     = useState(() => _mcPersisted.strategies);
   const [selectedAsset, setSelectedAsset] = useState(null);
 
   // Step 4
-  const [autoTrade, setAutoTrade]       = useState(false);
-  const [stake, setStake]               = useState('2.0');
-  const [minConfidence, setMinConfidence] = useState('75');
-  const [signals, setSignals]           = useState([]);
+  const [autoTrade, setAutoTrade]       = useState(() => _mcPersisted.autoTrade);
+  const [stake, setStake]               = useState(() => _mcPersisted.stake);
+  const [minConfidence, setMinConfidence] = useState(() => _mcPersisted.minConfidence);
+  const [signals, setSignals]           = useState(() => _mcPersisted.signals);
   const [configSaving, setConfigSaving] = useState(false);
   const [configOpen, setConfigOpen]     = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
@@ -218,6 +238,23 @@ export default function MissionControl() {
   const signalTimer  = useRef(null);
   const minPayoutRef = useRef(minPayout);
   useEffect(() => { minPayoutRef.current = minPayout; }, [minPayout]);
+
+  // Sincroniza mudanças no cache global para não perder dados ao alternar abas
+  useEffect(() => {
+    _mcPersisted.connected = connected;
+    _mcPersisted.isSimulated = isSimulated;
+    _mcPersisted.accountEmail = accountEmail;
+    _mcPersisted.accountType = accountType;
+    _mcPersisted.minPayout = minPayout;
+    _mcPersisted.topAssets = topAssets;
+    _mcPersisted.assetsLastAt = assetsLastAt;
+    _mcPersisted.backtest = backtest;
+    _mcPersisted.strategies = strategies;
+    _mcPersisted.autoTrade = autoTrade;
+    _mcPersisted.stake = stake;
+    _mcPersisted.minConfidence = minConfidence;
+    _mcPersisted.signals = signals;
+  }, [connected, isSimulated, accountEmail, accountType, minPayout, topAssets, assetsLastAt, backtest, strategies, autoTrade, stake, minConfidence, signals]);
 
   // STEP 1: carrega ativos top por payout
   const loadTopAssets = useCallback(async (threshold = minPayoutRef.current, force = false) => {
@@ -424,7 +461,22 @@ export default function MissionControl() {
     (async () => {
       try {
         const session = await fetchIQSession();
-        if (alive) await afterConnect(session, session.account_type);
+        if (!alive) return;
+        // Se já estava inicializado na sessão anterior (troca de aba), mantém dados e não repete animação do zero
+        if (_mcPersisted.initialized && _mcPersisted.topAssets.length > 0) {
+          setConnected(true);
+          setAccountEmail(session.email);
+          setAccountType(session.account_type || 'PRACTICE');
+          liveFeed.connect();
+          loadSignals();
+          signalTimer.current  = setInterval(loadSignals, 3000);
+          refreshTimer.current = setInterval(() => {
+            loadTopAssets(minPayoutRef.current, false);
+          }, 30000);
+          return;
+        }
+        await afterConnect(session, session.account_type);
+        _mcPersisted.initialized = true;
       } catch (_) {}
     })();
     return () => {
@@ -443,6 +495,12 @@ export default function MissionControl() {
     liveFeed.disconnect();
     invalidateCache();
     invalidatePairValidation();
+    _mcPersisted.initialized = false;
+    _mcPersisted.connected = false;
+    _mcPersisted.topAssets = [];
+    _mcPersisted.strategies = [];
+    _mcPersisted.signals = [];
+    _mcPersisted.backtest = { m1: 0, m5: 0, current: '', done: false };
     setConnected(false); setAccountEmail('');
     setTopAssets([]); setStrategies([]); setSignals([]);
     setBacktest({ m1: 0, m5: 0, current: '', done: false });

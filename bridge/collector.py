@@ -32,7 +32,7 @@ import db
 # consulta de ativos. NÃO importamos nada de trade.
 # ---------------------------------------------------------------------------
 from iqoptionapi.iqapi import IQOptionClient  # noqa: E402  (import depois de sys.path se precisar)
-from iqoptionapi.models import InstrumentType  # noqa: E402
+from iqoptionapi.models import InstrumentType, OptionsTradeParams, Direction, OptionType  # noqa: E402
 from iqoptionapi.instruments.options_assests import UNDERLYING_ASSESTS  # noqa: E402
 
 log = logging.getLogger("collector")
@@ -176,52 +176,27 @@ class Collector(threading.Thread):
             log.error("Listener de vela falhou (%s/%s): %s", asset_id, tf_id, listener_err)
 
     def execute_trade(self, asset: str, direction: str, expiry: int = 1, amount: float = 2.0):
-        """Executa entrada na IQ Option (binária ou digital) para a conta conectada."""
+        """Executa entrada na IQ Option (binária ou digital) com ultra-baixa latência."""
         client = self.client
         if not self.connected or client is None:
             return False, "Cliente IQ Option não conectado"
         try:
-            from iqoptionapi.models import OptionsTradeParams, Direction, OptionType
             dir_enum = Direction.CALL if direction.upper() == "CALL" else Direction.PUT
 
-            # Monta lista de tickers candidatos na IQ Option em ordem de prioridade:
-            candidates = []
+            # Prioridade direta: se o ativo já foi resolvido e está ativo, usa direto
             resolved = self.asset_resolved.get(asset)
-            if resolved and resolved not in candidates:
-                candidates.append(resolved)
-            for cand in config.ASSET_IQ_NAMES.get(asset, []):
-                if cand not in candidates:
-                    candidates.append(cand)
-            if asset not in candidates:
-                candidates.append(asset)
-            for suffix in ("-OTC",):
-                c_suf = f"{asset}{suffix}"
-                if c_suf not in candidates:
-                    candidates.append(c_suf)
-            clean = asset.replace("-OTC", "").replace("-op", "")
-            if clean not in candidates:
-                candidates.append(clean)
-
-            # Filtra preferencialmente aqueles conhecidos em UNDERLYING_ASSESTS
-            prioritized = [c for c in candidates if c in UNDERLYING_ASSESTS]
-            if not prioritized:
-                prioritized = candidates
-
-            # Prioriza ativos que comprovadamente estão abertos e com payout > 0 agora
-            if self.payouts:
-                open_with_payout = [c for c in prioritized if self.payouts.get(c, 0) > 0]
-                if open_with_payout:
-                    prioritized = open_with_payout
-
-            # Limita a no máximo 2 tentativas rápidas para nunca prender o sistema
-            prioritized = prioritized[:2]
+            if resolved:
+                prioritized = [resolved]
+            else:
+                candidates = [asset, f"{asset}-OTC"]
+                if self.payouts:
+                    paying = [c for c in candidates if self.payouts.get(c, 0) > 0]
+                    prioritized = paying if paying else candidates
+                else:
+                    prioritized = candidates
 
             last_error = None
-            for cand in prioritized:
-                log.info(
-                    "Tentando auto-trade no ativo IQ '%s' (origem: '%s', dir: %s, exp: %dm, val: $%.2f)",
-                    cand, asset, direction, expiry, amount,
-                )
+            for cand in prioritized[:2]:
                 # Tenta binária primeiro
                 try:
                     params = OptionsTradeParams(
@@ -233,12 +208,11 @@ class Collector(threading.Thread):
                     )
                     res = client.execute_options_trade(params)
                     if isinstance(res, tuple) and res[0]:
-                        log.info("✅ Auto-trade binário executado: %s -> #%s", cand, res[1])
+                        log.info("⚡ Auto-trade binário executado: %s -> #%s", cand, res[1])
                         return True, str(res[1])
                     last_error = str(res)
                 except Exception as e_bin:
                     last_error = str(e_bin)
-                    log.debug("Trade binário em '%s' não aceito (%s), tentando digital...", cand, e_bin)
 
                 # Tenta digital
                 try:
@@ -251,14 +225,16 @@ class Collector(threading.Thread):
                     )
                     res_dig = client.execute_options_trade(params_dig)
                     if isinstance(res_dig, tuple) and res_dig[0]:
-                        log.info("✅ Auto-trade digital executado: %s -> #%s", cand, res_dig[1])
+                        log.info("⚡ Auto-trade digital executado: %s -> #%s", cand, res_dig[1])
                         return True, str(res_dig[1])
                     last_error = str(res_dig)
                 except Exception as e_dig:
                     last_error = str(e_dig)
-                    log.debug("Trade digital em '%s' não aceito (%s)...", cand, e_dig)
 
-            return False, last_error or "Nenhuma modalidade (binária/digital) aceitou a ordem"
+            return False, last_error or "Nenhuma modalidade aceitou a ordem"
+        except Exception as e:
+            log.error("Erro ao executar trade na IQ Option: %s", e)
+            return False, str(e)
         except Exception as e:
             log.error("Erro ao executar trade na IQ Option: %s", e)
             return False, str(e)

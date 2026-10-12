@@ -379,6 +379,8 @@ class SessionScanner:
         self.min_payout: int = MIN_PAYOUT
         self.max_gales: int = int(__import__("os").getenv("MAX_GALES", "1"))
         self.gale_multiplier: float = float(__import__("os").getenv("GALE_MULTIPLIER", "2.0"))
+        # Cache em memória RAM das últimas velas para latência zero (sem bater no disco a cada vela)
+        self._candles_cache: Dict[Tuple[str, str], deque] = {}
 
     def on_candle_closed(self, asset_id: str, tf: str, candle: dict) -> None:
         """
@@ -393,11 +395,18 @@ class SessionScanner:
         if payout and payout < self.min_payout:
             return
 
-        try:
-            rows = db.query(asset_id, tf, LOOKBACK_HOURS, self.db_path)
-        except Exception as e:
-            log.debug("db.query %s/%s falhou: %s", asset_id, tf, e)
-            return
+        # ⚡ Cache em RAM: busca no SQLite apenas na 1ª vez; depois alimenta em memória instantaneamente
+        cache_key = (asset_id, tf)
+        if cache_key not in self._candles_cache or len(self._candles_cache[cache_key]) < MIN_CANDLES:
+            try:
+                initial_rows = db.query(asset_id, tf, 4, self.db_path)
+                self._candles_cache[cache_key] = deque(initial_rows, maxlen=80)
+            except Exception as e:
+                log.debug("db.query %s/%s inicial falhou: %s", asset_id, tf, e)
+                return
+
+        self._candles_cache[cache_key].append(candle)
+        rows = list(self._candles_cache[cache_key])
 
         if len(rows) < MIN_CANDLES:
             return
@@ -421,6 +430,34 @@ class SessionScanner:
         self._emit(sig)
 
     def _emit(self, sig: ScannerSignal) -> None:
+        # ⚡ PRIORIDADE MÁXIMA: Dispara trade imediatamente para cravar a abertura da vela no PONTO A
+        order_info = ""
+        trade_status = "not_executed"
+        trade_res = None
+        tf_exp = 1 if sig.timeframe == "M1" else (5 if sig.timeframe == "M5" else 15)
+
+        if self.auto_trade and self.collector:
+            try:
+                ok, res = self.collector.execute_trade(
+                    asset=sig.asset,
+                    direction=sig.direction,
+                    expiry=tf_exp,
+                    amount=self.stake,
+                )
+                if ok:
+                    trade_status = "executed"
+                    trade_res = str(res)
+                    order_info = f"Ordem #{res} (${self.stake:.2f})"
+                    log.info("[%s] ⚡ Auto-trade IMEDIATO executado: %s %s | #%s", self.session_token[:8], sig.asset, sig.direction, res)
+                else:
+                    trade_status = f"failed: {res}"
+                    order_info = f"Falha na entrada: {res}"
+                    log.warning("[%s] Auto-trade rejeitado: %s %s: %s", self.session_token[:8], sig.asset, sig.direction, res)
+            except Exception as e_trade:
+                trade_status = f"error: {e_trade}"
+                order_info = f"Erro: {e_trade}"
+                log.error("[%s] Erro ao executar auto-trade imediato: %s", self.session_token[:8], e_trade)
+
         entry_time_str = time.strftime("%H:%M", time.localtime(sig.candle_time))
         signal_id = _make_signal_id(sig)
         account_type = getattr(self.collector, "account_type", "PRACTICE") if self.collector else "PRACTICE"
@@ -445,41 +482,14 @@ class SessionScanner:
 
         display_name = f"{pair_formatted} (OTC)" if is_otc else pair_formatted
 
-        # Executa entrada automática na IQ Option se habilitado
-        order_info = ""
-        trade_status = "not_executed"
-        if self.auto_trade and self.collector:
-            try:
-                tf_exp = 1
-                if sig.timeframe == "M5":
-                    tf_exp = 5
-                elif sig.timeframe == "M15":
-                    tf_exp = 15
-                ok, res = self.collector.execute_trade(
-                    asset=sig.asset,
-                    direction=sig.direction,
-                    expiry=tf_exp,
-                    amount=self.stake,
-                )
-                if ok:
-                    trade_status = "executed"
-                    order_info = f"Ordem #{res} (${self.stake:.2f})"
-                    log.info("[%s] Auto-trade executado com sucesso: %s %s | #%s", self.session_token[:8], display_name, sig.direction, res)
-                    # Dispara monitoramento com suporte a Gale 1 e resumo automático no Telegram
-                    threading.Thread(
-                        target=self._monitor_trade_and_run_gale,
-                        args=(sig, str(res), tf_exp, self.stake, signal_id, display_name, account_type),
-                        daemon=True,
-                        name=f"gale-watcher-{res}",
-                    ).start()
-                else:
-                    trade_status = f"failed: {res}"
-                    order_info = f"Falha na entrada: {res}"
-                    log.warning("[%s] Auto-trade rejeitado: %s %s: %s", self.session_token[:8], display_name, sig.direction, res)
-            except Exception as e_trade:
-                trade_status = f"error: {e_trade}"
-                order_info = f"Erro: {e_trade}"
-                log.error("[%s] Erro ao executar auto-trade: %s", self.session_token[:8], e_trade)
+        # Se a ordem foi executada com sucesso, inicia o monitor de Gale 1
+        if trade_res:
+            threading.Thread(
+                target=self._monitor_trade_and_run_gale,
+                args=(sig, trade_res, tf_exp, self.stake, signal_id, display_name, account_type),
+                daemon=True,
+                name=f"gale-watcher-{trade_res}",
+            ).start()
 
         msg_text = _build_telegram_message(
             sig, entry_time_str,
