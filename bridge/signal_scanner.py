@@ -16,6 +16,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -618,7 +619,7 @@ class SessionScanner:
 
     def _monitor_trade_and_run_gale(
         self,
-        sig: Signal,
+        sig: ScannerSignal,
         order_id: str,
         tf_exp: int,
         initial_stake: float,
@@ -745,7 +746,7 @@ class SessionScanner:
         )
         self._update_signal_record(signal_id, "loss", f"LOSS (-${initial_stake:.2f})")
 
-    def _check_order_outcome(self, sig: Signal, order_id: str, tf_exp: int) -> Tuple[str, float]:
+    def _check_order_outcome(self, sig: ScannerSignal, order_id: str, tf_exp: int) -> Tuple[str, float]:
         """Avalia se a ordem foi WIN ou LOSS usando a API da IQ ou os preços da vela fechada."""
         # 1. Tenta API oficial da IQ Option se conectada
         if self.collector and self.collector.client:
