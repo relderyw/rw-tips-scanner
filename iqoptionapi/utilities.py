@@ -150,4 +150,23 @@ def generate_request_id(request_id: Optional[str] = None) -> str:
 def get_asset_id(asset_name: str) -> int:
     if asset_name in UNDERLYING_ASSESTS:
         return UNDERLYING_ASSESTS[asset_name]
+    # Se nao encontrado direto, tenta sufixos comuns (mercado OTC ou binarias -op)
+    for cand in (
+        f"{asset_name}-OTC",
+        f"{asset_name}-op",
+        asset_name.replace("-OTC", ""),
+        asset_name.replace("-op", ""),
+    ):
+        if cand in UNDERLYING_ASSESTS:
+            return UNDERLYING_ASSESTS[cand]
+    # Busca case-insensitive e flexivel (remove barras, tracos e espacos)
+    clean = asset_name.upper().replace("/", "").replace(" ", "").replace("-", "")
+    for k, v in UNDERLYING_ASSESTS.items():
+        k_clean = k.upper().replace("/", "").replace(" ", "").replace("-", "")
+        if clean == k_clean:
+            return v
+    for k, v in UNDERLYING_ASSESTS.items():
+        k_clean = k.upper().replace("/", "").replace(" ", "").replace("-", "")
+        if k_clean.startswith(clean) or clean in k_clean:
+            return v
     raise KeyError(f"Asset '{asset_name}' not found in underlying assets")

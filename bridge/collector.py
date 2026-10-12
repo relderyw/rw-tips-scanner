@@ -177,33 +177,77 @@ class Collector(threading.Thread):
         try:
             from iqoptionapi.models import OptionsTradeParams, Direction, OptionType
             dir_enum = Direction.CALL if direction.upper() == "CALL" else Direction.PUT
-            # Tenta binária primeiro
-            try:
-                params = OptionsTradeParams(
-                    asset=asset,
-                    expiry=expiry,
-                    amount=amount,
-                    direction=dir_enum,
-                    option_type=OptionType.BINARY_OPTION,
-                )
-                res = client.execute_options_trade(params)
-                if isinstance(res, tuple) and res[0]:
-                    return True, str(res[1])
-            except Exception as e_bin:
-                log.debug("Trade binário não executado, tentando digital: %s", e_bin)
 
-            # Tenta digital
-            params_dig = OptionsTradeParams(
-                asset=asset,
-                expiry=expiry,
-                amount=amount,
-                direction=dir_enum,
-                option_type=OptionType.DIGITAL_OPTION,
-            )
-            res_dig = client.execute_options_trade(params_dig)
-            if isinstance(res_dig, tuple) and res_dig[0]:
-                return True, str(res_dig[1])
-            return False, str(res_dig)
+            # Monta lista de tickers candidatos na IQ Option em ordem de prioridade:
+            # 1) Resolução ativa detectada pelo collector (ex: GBPUSD-OTC quando normal está fechado)
+            candidates = []
+            resolved = self.asset_resolved.get(asset)
+            if resolved and resolved not in candidates:
+                candidates.append(resolved)
+            # 2) Candidatos configurados em config.ASSET_IQ_NAMES
+            for cand in config.ASSET_IQ_NAMES.get(asset, []):
+                if cand not in candidates:
+                    candidates.append(cand)
+            # 3) O próprio asset informado
+            if asset not in candidates:
+                candidates.append(asset)
+            # 4) Variações com sufixo -OTC e -op
+            for suffix in ("-OTC", "-op"):
+                c_suf = f"{asset}{suffix}"
+                if c_suf not in candidates:
+                    candidates.append(c_suf)
+            clean = asset.replace("-OTC", "").replace("-op", "")
+            if clean not in candidates:
+                candidates.append(clean)
+
+            # Filtra preferencialmente aqueles conhecidos em UNDERLYING_ASSESTS
+            prioritized = [c for c in candidates if c in UNDERLYING_ASSESTS]
+            if not prioritized:
+                prioritized = candidates
+
+            last_error = None
+            for cand in prioritized:
+                log.info(
+                    "Tentando auto-trade no ativo IQ '%s' (origem: '%s', dir: %s, exp: %dm, val: $%.2f)",
+                    cand, asset, direction, expiry, amount,
+                )
+                # Tenta binária primeiro
+                try:
+                    params = OptionsTradeParams(
+                        asset=cand,
+                        expiry=expiry,
+                        amount=amount,
+                        direction=dir_enum,
+                        option_type=OptionType.BINARY_OPTION,
+                    )
+                    res = client.execute_options_trade(params)
+                    if isinstance(res, tuple) and res[0]:
+                        log.info("✅ Auto-trade binário executado: %s -> #%s", cand, res[1])
+                        return True, str(res[1])
+                    last_error = str(res)
+                except Exception as e_bin:
+                    last_error = str(e_bin)
+                    log.debug("Trade binário em '%s' não aceito (%s), tentando digital...", cand, e_bin)
+
+                # Tenta digital
+                try:
+                    params_dig = OptionsTradeParams(
+                        asset=cand,
+                        expiry=expiry,
+                        amount=amount,
+                        direction=dir_enum,
+                        option_type=OptionType.DIGITAL_OPTION,
+                    )
+                    res_dig = client.execute_options_trade(params_dig)
+                    if isinstance(res_dig, tuple) and res_dig[0]:
+                        log.info("✅ Auto-trade digital executado: %s -> #%s", cand, res_dig[1])
+                        return True, str(res_dig[1])
+                    last_error = str(res_dig)
+                except Exception as e_dig:
+                    last_error = str(e_dig)
+                    log.debug("Trade digital em '%s' não aceito (%s)...", cand, e_dig)
+
+            return False, last_error or "Nenhuma modalidade (binária/digital) aceitou a ordem"
         except Exception as e:
             log.error("Erro ao executar trade na IQ Option: %s", e)
             return False, str(e)
@@ -570,7 +614,7 @@ class Collector(threading.Thread):
             # 2 tentativas lineares por stream com pequeno backoff.
             for attempt in range(2):
                 try:
-                    if self.client.start_candle_stream(iq_name, sk.tf_sec, timeout=5):
+                    if self.client.start_candle_stream(iq_name, sk.tf_sec, timeout=10):
                         result_ok = True
                         break
                 except Exception as e:  # noqa: BLE001
@@ -606,7 +650,7 @@ class Collector(threading.Thread):
             pass
         time.sleep(0.2)
         try:
-            ok = self.client.start_candle_stream(iq_name, sk.tf_sec, timeout=5)
+            ok = self.client.start_candle_stream(iq_name, sk.tf_sec, timeout=10)
         except Exception as e:  # noqa: BLE001
             log.warning("resubscribe_one ex: %s", e)
             ok = False

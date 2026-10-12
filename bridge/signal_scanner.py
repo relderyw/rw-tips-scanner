@@ -260,7 +260,13 @@ def _escape(text: str) -> str:
     return re.sub(r"([_*\[\]()~`>#+=|{}.!\\\-])", r"\\\1", str(text))
 
 
-def _build_telegram_message(sig: ScannerSignal, entry_time_str: str, account_type: str = "PRACTICE", order_info: str = "") -> str:
+def _build_telegram_message(
+    sig: ScannerSignal,
+    entry_time_str: str,
+    account_type: str = "PRACTICE",
+    order_info: str = "",
+    display_name: str = "",
+) -> str:
     arrow  = "📈" if sig.direction == "CALL" else "📉"
     tf_map = {"M1": "1 minuto (M1)", "M5": "5 minutos (M5)", "M15": "15 minutos (M15)", "1m": "1 minuto (M1)", "5m": "5 minutos (M5)"}
     tf_str = tf_map.get(sig.timeframe, sig.timeframe)
@@ -268,11 +274,12 @@ def _build_telegram_message(sig: ScannerSignal, entry_time_str: str, account_typ
     strats = "\n  ✦ ".join(_escape(s) for s in sig.strategies)
     acct_label = "🔵 DEMO (PRACTICE)" if "PRACTICE" in account_type.upper() or "DEMO" in account_type.upper() else "🔴 CONTA REAL"
     trade_line = f"\n⚡ *Entrada automática:* `{_escape(order_info)}`" if order_info else ""
+    asset_title = display_name if display_name else sig.asset
 
     return (
         f"🤖 *RW TIPS SCANNER*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{arrow} *{_escape(sig.direction)}*  \\|  *{_escape(sig.asset)}*\n"
+        f"{arrow} *{_escape(sig.direction)}*  \\|  *{_escape(asset_title)}*\n"
         f"⏱ Timeframe: *{_escape(tf_str)}*\n"
         f"⚡ Assertividade/Confiança: *{sig.confidence}%*\n"
         f"💰 Payout: *{_escape(payout_str)}*\n"
@@ -362,6 +369,26 @@ class SessionScanner:
         signal_id = _make_signal_id(sig)
         account_type = getattr(self.collector, "account_type", "PRACTICE") if self.collector else "PRACTICE"
 
+        # Resolve status OTC e formatação do ativo
+        iq_ticker = sig.asset
+        is_otc = False
+        if self.collector:
+            resolved = getattr(self.collector, "asset_resolved", {}).get(sig.asset, sig.asset)
+            if resolved:
+                iq_ticker = resolved
+            if "-OTC" in str(iq_ticker) or "-otc" in str(iq_ticker) or "(OTC)" in str(iq_ticker):
+                is_otc = True
+        elif "-OTC" in sig.asset or "(OTC)" in sig.asset:
+            is_otc = True
+
+        base_clean = sig.asset.replace("-OTC", "").replace("-op", "")
+        if len(base_clean) == 6 and base_clean.isalpha():
+            pair_formatted = f"{base_clean[:3]}/{base_clean[3:]}"
+        else:
+            pair_formatted = base_clean
+
+        display_name = f"{pair_formatted} (OTC)" if is_otc else pair_formatted
+
         # Executa entrada automática na IQ Option se habilitado
         order_info = ""
         trade_status = "not_executed"
@@ -381,21 +408,26 @@ class SessionScanner:
                 if ok:
                     trade_status = "executed"
                     order_info = f"Ordem #{res} (${self.stake:.2f})"
-                    log.info("[%s] Auto-trade executado: %s %s | #%s", self.session_token[:8], sig.asset, sig.direction, res)
+                    log.info("[%s] Auto-trade executado com sucesso: %s %s | #%s", self.session_token[:8], display_name, sig.direction, res)
                 else:
                     trade_status = f"failed: {res}"
                     order_info = f"Falha na entrada: {res}"
-                    log.warning("[%s] Auto-trade rejeitado: %s %s: %s", self.session_token[:8], sig.asset, sig.direction, res)
+                    log.warning("[%s] Auto-trade rejeitado: %s %s: %s", self.session_token[:8], display_name, sig.direction, res)
             except Exception as e_trade:
                 trade_status = f"error: {e_trade}"
                 order_info = f"Erro: {e_trade}"
                 log.error("[%s] Erro ao executar auto-trade: %s", self.session_token[:8], e_trade)
 
-        msg_text = _build_telegram_message(sig, entry_time_str, account_type=account_type, order_info=order_info)
+        msg_text = _build_telegram_message(
+            sig, entry_time_str,
+            account_type=account_type,
+            order_info=order_info,
+            display_name=display_name,
+        )
 
         log.info(
             "[%s] SINAL: %s %s [%s] conf=%d%% payout=%d%% conta=%s",
-            self.session_token[:8], sig.asset, sig.direction,
+            self.session_token[:8], display_name, sig.direction,
             sig.timeframe, sig.confidence, sig.payout, account_type,
         )
 
@@ -404,7 +436,7 @@ class SessionScanner:
                 signal_id=signal_id,
                 owner_id=self.identity_hash,
                 strategy=f"{'; '.join(sig.strategies[:3])}",
-                asset=sig.asset,
+                asset=display_name,
                 direction=sig.direction,
                 timeframe=sig.timeframe,
                 signal_time=entry_time_str,
@@ -421,6 +453,9 @@ class SessionScanner:
         record = {
             "signal_id":    signal_id,
             "asset":        sig.asset,
+            "display_name": display_name,
+            "iq_ticker":    iq_ticker,
+            "is_otc":       is_otc,
             "direction":    sig.direction,
             "timeframe":    sig.timeframe,
             "confidence":   sig.confidence,

@@ -852,12 +852,21 @@ export default function MissionControl() {
                 }`}>{sig.direction}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-bold text-white text-xs">{sig.asset}</span>
+                    <span className="font-bold text-white text-xs">{sig.display_name || sig.asset}</span>
+                    {(sig.is_otc || (sig.display_name && sig.display_name.includes('OTC'))) && (
+                      <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider">
+                        OTC
+                      </span>
+                    )}
                     <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-bold">{sig.timeframe}</span>
                     <span className={`text-[10px] font-bold ${confColor(sig.confidence)}`}>{sig.confidence}% conf</span>
                     <span className={`text-[10px] font-bold ${payoutColor(sig.payout)}`}>{sig.payout}% pay</span>
                     {sig.order_info && (
-                      <span className="text-[10px] px-1.5 py-0.2 rounded font-bold bg-neon/10 text-neon border border-neon/20">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${
+                        sig.trade_status === 'executed'
+                          ? 'bg-neon/10 text-neon border-neon/20'
+                          : 'bg-yellow-400/10 text-yellow-400 border-yellow-400/20'
+                      }`}>
                         {sig.order_info}
                       </span>
                     )}
