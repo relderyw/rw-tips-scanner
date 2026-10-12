@@ -650,6 +650,14 @@ def update_telegram_signal_result(
     return {"updated": updated, "duplicate": not updated}
 
 
+@app.api_route("/ping", methods=["GET", "HEAD"])
+def ping():
+    """Endpoint público para monitoramento externo (UptimeRobot, etc).
+    Não requer autenticação. Aceita GET e HEAD.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/health")
 @app.get("/app-health")
 def health(session: UserSession = Depends(require_iq_session)):
