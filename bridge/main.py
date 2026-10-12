@@ -349,6 +349,8 @@ class ScannerConfigRequest(BaseModel):
     stake: Optional[float] = None
     min_confidence: Optional[int] = None
     min_payout: Optional[int] = None
+    max_gales: Optional[int] = None
+    gale_multiplier: Optional[float] = None
     enabled: Optional[bool] = None
 
 
@@ -471,6 +473,8 @@ def update_scanner_config(payload: ScannerConfigRequest, session: UserSession = 
         stake=payload.stake,
         min_confidence=payload.min_confidence,
         min_payout=payload.min_payout,
+        max_gales=payload.max_gales,
+        gale_multiplier=payload.gale_multiplier,
     )
     return scanner.get_config()
 

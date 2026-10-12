@@ -430,8 +430,12 @@ class Collector(threading.Thread):
         """Return the currently open binary-option assets and their IQ payouts."""
         if not self.connected or self.client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
-        with self._market_data_lock:
-            actives = self.client.get_actives(InstrumentType.BINARY_OPTION) or {}
+        actives = {}
+        try:
+            with self._market_data_lock:
+                actives = self.client.get_actives(InstrumentType.BINARY_OPTION) or {}
+        except Exception as e_act:
+            log.warning("get_actives() falhou no collector: %s", e_act)
 
         rows = []
         for active_id, info in actives.items():
@@ -457,6 +461,20 @@ class Collector(threading.Thread):
                 "is_open": True,
                 "candles_supported": True,
             })
+
+        # Fallback confiável para self.payouts
+        if not rows and self.payouts:
+            for ticker, pay in self.payouts.items():
+                if pay > 0 and (ticker in UNDERLYING_ASSESTS or ticker in config.ASSET_IDS):
+                    rows.append({
+                        "asset": ticker,
+                        "name": ticker,
+                        "active_id": config.ASSET_IDS.get(ticker, 0),
+                        "payout": pay,
+                        "is_open": True,
+                        "candles_supported": True,
+                    })
+
         return sorted(rows, key=lambda row: (-(row["payout"] or 0), row["asset"]))
 
     def binary_option_candles(self, asset: str, tf_id: str, hours: int) -> list:

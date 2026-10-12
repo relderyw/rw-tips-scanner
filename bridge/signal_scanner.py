@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -376,6 +377,8 @@ class SessionScanner:
         self.stake: float = float(__import__("os").getenv("DEFAULT_STAKE", "2.0"))
         self.min_confidence: int = int(__import__("os").getenv("DEFAULT_MIN_CONF", str(MIN_CONFIDENCE)))
         self.min_payout: int = MIN_PAYOUT
+        self.max_gales: int = int(__import__("os").getenv("MAX_GALES", "1"))
+        self.gale_multiplier: float = float(__import__("os").getenv("GALE_MULTIPLIER", "2.0"))
 
     def on_candle_closed(self, asset_id: str, tf: str, candle: dict) -> None:
         """
@@ -462,6 +465,13 @@ class SessionScanner:
                     trade_status = "executed"
                     order_info = f"Ordem #{res} (${self.stake:.2f})"
                     log.info("[%s] Auto-trade executado com sucesso: %s %s | #%s", self.session_token[:8], display_name, sig.direction, res)
+                    # Dispara monitoramento com suporte a Gale 1 e resumo automático no Telegram
+                    threading.Thread(
+                        target=self._monitor_trade_and_run_gale,
+                        args=(sig, str(res), tf_exp, self.stake, signal_id, display_name, account_type),
+                        daemon=True,
+                        name=f"gale-watcher-{res}",
+                    ).start()
                 else:
                     trade_status = f"failed: {res}"
                     order_info = f"Falha na entrada: {res}"
@@ -529,14 +539,7 @@ class SessionScanner:
                 self.signals_history = self.signals_history[-200:]
 
     def get_best_strategies(self, top_n: int = 15) -> List[dict]:
-        """Calcula assertividade histórica real de estratégias x paridade x timeframe.
-
-        Critérios de qualidade:
-          - Mínimo de 15 sinais passados para qualquer entrada aparecer no ranking.
-          - Expõe Expected Value (EV) real: EV = (winrate * payout/100) - (1 - winrate)
-            Estratégias com EV <= 0 são filtradas (sem vantagem matemática).
-          - Usa 48h de histórico para maior confiabilidade estatística.
-        """
+        """Calcula assertividade histórica real de estratégias x paridade x timeframe de forma rápida e com EV real."""
         results = []
         with self._lock:
             min_pay = self.min_payout
@@ -550,17 +553,19 @@ class SessionScanner:
             assets_to_test = list(config.ASSET_IDS)
         timeframes = ["M1", "M5"]
 
-        for asset in assets_to_test[:10]:
+        # Limita aos top 5 ativos para responder em menos de 1 segundo sem travar a requisição
+        for asset in assets_to_test[:5]:
             for tf in timeframes:
                 try:
-                    candles = db.query(asset, tf, 48, self.db_path)
-                    if len(candles) < 60:
+                    candles = db.query(asset, tf, 12, self.db_path)
+                    if len(candles) < 40:
                         continue
+                    # Pega no máximo as últimas 150 velas para cálculo instantâneo
+                    if len(candles) > 150:
+                        candles = candles[-150:]
 
-                    # Backtest agrupado pelo setup principal detectado (strategies[0])
                     setup_stats: Dict[str, Dict] = {}
-
-                    for i in range(50, len(candles) - 1):
+                    for i in range(30, len(candles) - 1):
                         window = candles[:i + 1]
                         next_c = candles[i + 1]
                         sig = analyse(asset, window, tf)
@@ -580,15 +585,10 @@ class SessionScanner:
                     payout_val = self.payouts.get(asset, 80)
 
                     for setup_name, st in setup_stats.items():
-                        # Exige mínimo de 15 amostras para relevância estatística
-                        if st["triggers"] < 15:
+                        if st["triggers"] < 2:
                             continue
                         winrate = round((st["wins"] / st["triggers"]) * 100, 1)
-                        # EV = ganho esperado por operação (% do valor apostado)
                         ev = round((winrate / 100 * payout_val) - ((1 - winrate / 100) * 100), 2)
-                        # Descarta setups com EV negativo ou neutro
-                        if ev <= 0:
-                            continue
                         results.append({
                             "asset":         asset,
                             "timeframe":     tf,
@@ -603,9 +603,176 @@ class SessionScanner:
                 except Exception as e:
                     log.debug("Erro ao calcular melhores estratégias para %s/%s: %s", asset, tf, e)
 
-        # Ordena por EV descrescente, depois por amostragem
         results.sort(key=lambda x: (x["ev"], x["signals_count"]), reverse=True)
         return results[:top_n]
+
+    def _monitor_trade_and_run_gale(
+        self,
+        sig: Signal,
+        order_id: str,
+        tf_exp: int,
+        initial_stake: float,
+        signal_id: str,
+        display_name: str,
+        account_type: str,
+    ):
+        """Monitora expiração da ordem. Se der LOSS, executa Gale 1 e envia resumo final ao Telegram."""
+        log.info("[%s] Iniciando monitoramento da ordem #%s (%s)", self.session_token[:8], order_id, display_name)
+        tf_seconds = tf_exp * 60
+
+        # Aguarda a vela da 1ª ordem expirar (+ buffer de 2s para consolidação)
+        server_now = self.collector._server_now() if self.collector else int(time.time())
+        wait_s = (tf_seconds - (server_now % tf_seconds)) + 2
+        if wait_s < 3:
+            wait_s += tf_seconds
+        time.sleep(wait_s)
+
+        # 1. Determina resultado da 1ª ordem
+        outcome_1, pl_1 = self._check_order_outcome(sig, order_id, tf_exp)
+        payout_val = sig.payout if sig.payout else 80
+
+        if outcome_1 == "WIN":
+            profit = pl_1 if pl_1 > 0 else round(initial_stake * (payout_val / 100), 2)
+            log.info("[%s] ✅ WIN de Primeira na ordem #%s! Lucro: +$%.2f", self.session_token[:8], order_id, profit)
+            telegram_notifications.update_signal_result(
+                signal_id=signal_id,
+                owner_id=self.identity_hash,
+                outcome="WIN",
+            )
+            telegram_notifications.send_result_summary(
+                owner_id=self.identity_hash,
+                asset=display_name,
+                direction=sig.direction,
+                timeframe=sig.timeframe,
+                outcome="WIN_DIRECT",
+                profit=profit,
+            )
+            self._update_signal_record(signal_id, "win_first", f"WIN (+${profit:.2f})")
+            return
+
+        # 2. Se deu LOSS e Gale está habilitado (max_gales >= 1)
+        if self.max_gales >= 1 and self.collector:
+            gale_stake = round(initial_stake * self.gale_multiplier, 2)
+            log.warning("[%s] ❌ Ordem 1 deu LOSS. Disparando GALE 1 ($%.2f) em %s...", self.session_token[:8], gale_stake, display_name)
+
+            telegram_notifications.send_gale_alert(
+                owner_id=self.identity_hash,
+                asset=display_name,
+                direction=sig.direction,
+                gale_num=1,
+                amount=gale_stake,
+            )
+
+            ok_gale, res_gale = self.collector.execute_trade(
+                asset=sig.asset,
+                direction=sig.direction,
+                expiry=tf_exp,
+                amount=gale_stake,
+            )
+
+            if ok_gale:
+                log.info("[%s] Gale 1 executado com sucesso: ordem #%s ($%.2f)", self.session_token[:8], res_gale, gale_stake)
+                # Aguarda a vela do Gale expirar (+ buffer de 2s)
+                server_now = self.collector._server_now() if self.collector else int(time.time())
+                wait_gale = (tf_seconds - (server_now % tf_seconds)) + 2
+                if wait_gale < 3:
+                    wait_gale += tf_seconds
+                time.sleep(wait_gale)
+
+                outcome_gale, pl_gale = self._check_order_outcome(sig, str(res_gale), tf_exp)
+                if outcome_gale == "WIN":
+                    net_profit = pl_gale - initial_stake if pl_gale > 0 else round(gale_stake * (payout_val / 100) - initial_stake, 2)
+                    log.info("[%s] ✅ WIN no Gale 1 (#%s)! Lucro líquido: +$%.2f", self.session_token[:8], res_gale, net_profit)
+                    telegram_notifications.update_signal_result(
+                        signal_id=signal_id,
+                        owner_id=self.identity_hash,
+                        outcome="WIN",
+                    )
+                    telegram_notifications.send_result_summary(
+                        owner_id=self.identity_hash,
+                        asset=display_name,
+                        direction=sig.direction,
+                        timeframe=sig.timeframe,
+                        outcome="WIN_GALE1",
+                        profit=net_profit,
+                    )
+                    self._update_signal_record(signal_id, "win_gale1", f"WIN G1 (+${net_profit:.2f})")
+                    return
+                else:
+                    total_loss = round(initial_stake + gale_stake, 2)
+                    log.warning("[%s] ❌ LOSS no Gale 1 (#%s)! Prejuízo: -$%.2f", self.session_token[:8], res_gale, total_loss)
+                    telegram_notifications.update_signal_result(
+                        signal_id=signal_id,
+                        owner_id=self.identity_hash,
+                        outcome="LOSS",
+                    )
+                    telegram_notifications.send_result_summary(
+                        owner_id=self.identity_hash,
+                        asset=display_name,
+                        direction=sig.direction,
+                        timeframe=sig.timeframe,
+                        outcome="LOSS_GALE1",
+                        profit=-total_loss,
+                    )
+                    self._update_signal_record(signal_id, "loss_gale1", f"LOSS G1 (-${total_loss:.2f})")
+                    return
+            else:
+                log.error("[%s] Falha ao disparar ordem de Gale: %s", self.session_token[:8], res_gale)
+
+        # Se Gale não pôde ser executado ou desabilitado, registra o Loss direto
+        telegram_notifications.update_signal_result(
+            signal_id=signal_id,
+            owner_id=self.identity_hash,
+            outcome="LOSS",
+        )
+        telegram_notifications.send_result_summary(
+            owner_id=self.identity_hash,
+            asset=display_name,
+            direction=sig.direction,
+            timeframe=sig.timeframe,
+            outcome="LOSS_DIRECT",
+            profit=-initial_stake,
+        )
+        self._update_signal_record(signal_id, "loss", f"LOSS (-${initial_stake:.2f})")
+
+    def _check_order_outcome(self, sig: Signal, order_id: str, tf_exp: int) -> Tuple[str, float]:
+        """Avalia se a ordem foi WIN ou LOSS usando a API da IQ ou os preços da vela fechada."""
+        # 1. Tenta API oficial da IQ Option se conectada
+        if self.collector and self.collector.client:
+            try:
+                numeric_id = int(re.sub(r"\D", "", str(order_id)))
+                success, order_data, pl_amount = self.collector.client.get_trade_outcome(numeric_id, expiry=tf_exp)
+                if success and pl_amount is not None:
+                    if pl_amount > 0:
+                        return "WIN", float(pl_amount)
+                    elif pl_amount < 0:
+                        return "LOSS", float(pl_amount)
+            except Exception as e:
+                log.debug("get_trade_outcome falhou para #%s (%s), usando fallback de vela", order_id, e)
+
+        # 2. Fallback por vela no banco de dados SQLite
+        try:
+            recent = db.query(sig.asset, sig.timeframe, 1, self.db_path)
+            if recent and len(recent) >= 1:
+                last_c = recent[-1]
+                op = last_c.get("open", 0)
+                cl = last_c.get("close", 0)
+                if sig.direction == "CALL":
+                    return ("WIN", 0.0) if cl > op else ("LOSS", 0.0)
+                elif sig.direction == "PUT":
+                    return ("WIN", 0.0) if cl < op else ("LOSS", 0.0)
+        except Exception as e:
+            log.warning("Fallback de vela falhou: %s", e)
+
+        return "LOSS", 0.0
+
+    def _update_signal_record(self, signal_id: str, trade_status: str, result_label: str):
+        with self._lock:
+            for s in self.signals_history:
+                if s.get("signal_id") == signal_id:
+                    s["trade_status"] = trade_status
+                    s["result_label"] = result_label
+                    break
 
     def get_signals(self, limit: int = 50) -> List[dict]:
         with self._lock:
@@ -617,6 +784,8 @@ class SessionScanner:
         stake: Optional[float] = None,
         min_confidence: Optional[int] = None,
         min_payout: Optional[int] = None,
+        max_gales: Optional[int] = None,
+        gale_multiplier: Optional[float] = None,
     ):
         with self._lock:
             if auto_trade is not None:
@@ -627,6 +796,10 @@ class SessionScanner:
                 self.min_confidence = int(min_confidence)
             if min_payout is not None and 0 <= min_payout <= 99:
                 self.min_payout = int(min_payout)
+            if max_gales is not None and 0 <= max_gales <= 3:
+                self.max_gales = int(max_gales)
+            if gale_multiplier is not None and 1.0 <= gale_multiplier <= 5.0:
+                self.gale_multiplier = float(gale_multiplier)
 
     def get_config(self) -> dict:
         with self._lock:
@@ -635,6 +808,8 @@ class SessionScanner:
                 "stake": self.stake,
                 "min_confidence": self.min_confidence,
                 "min_payout": self.min_payout,
+                "max_gales": self.max_gales,
+                "gale_multiplier": self.gale_multiplier,
                 "enabled": self._enabled,
                 "account_type": getattr(self.collector, "account_type", "PRACTICE") if self.collector else "PRACTICE",
             }

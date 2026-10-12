@@ -318,3 +318,97 @@ def update_signal_result(*, signal_id: str, owner_id: str, outcome: str) -> bool
                     (hashed_owner, int(time.time())),
                 )
     return True
+
+
+def send_result_summary(
+    *,
+    owner_id: str,
+    asset: str,
+    direction: str,
+    timeframe: str,
+    outcome: str,  # "WIN_DIRECT", "WIN_GALE1", "LOSS_GALE1", "LOSS_DIRECT"
+    profit: float,
+) -> bool:
+    """Envia uma mensagem resumo formatada do resultado final da ordem ao Telegram com o placar geral."""
+    try:
+        bot_token, chat_id = _get_configuration()
+    except Exception:
+        return False
+
+    stats = get_session_stats(owner_id)
+    greens = stats.get("greens", 0)
+    reds = stats.get("reds", 0)
+    total = greens + reds
+    winrate_str = f"{(greens / total * 100):.1f}%" if total > 0 else "100%"
+
+    dir_emoji = "🟢 CALL" if direction.upper() == "CALL" else "🔴 PUT"
+
+    if outcome == "WIN_DIRECT":
+        header = "🎯 *RESULTADO DA OPERAÇÃO*\n\n✅ *WIN DE PRIMEIRA\\!* 🚀"
+        profit_line = f"💰 *Lucro:* `+${profit:.2f}`"
+    elif outcome == "WIN_GALE1":
+        header = "🎯 *RESULTADO DA OPERAÇÃO*\n\n✅ *WIN NO GALE 1\\!* 🎯"
+        profit_line = f"💰 *Lucro Líquido:* `+${profit:.2f}` \\(Recuperado\\)"
+    elif outcome == "LOSS_GALE1":
+        header = "🎯 *RESULTADO DA OPERAÇÃO*\n\n❌ *LOSS NO GALE 1* 🔴"
+        profit_line = f"💸 *Prejuízo:* `-${abs(profit):.2f}` \\(Stop Gale 1\\)"
+    else:
+        header = "🎯 *RESULTADO DA OPERAÇÃO*\n\n❌ *LOSS* 🔴"
+        profit_line = f"💸 *Prejuízo:* `-${abs(profit):.2f}`"
+
+    lines = [
+        header,
+        f"💹 *Ativo:* `{_escape_md(asset)}`",
+        f"⏱ *Timeframe:* `{_escape_md(timeframe)}`",
+        f"📊 *Direção:* {dir_emoji}",
+        profit_line,
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 *Placar da Sessão:* {greens}🟢 \\| {reds}🔴 \\({_escape_md(winrate_str)} Assertividade\\)",
+    ]
+    message_text = "\n".join(lines)
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message_text, "parse_mode": "MarkdownV2"},
+            timeout=8,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def send_gale_alert(
+    *,
+    owner_id: str,
+    asset: str,
+    direction: str,
+    gale_num: int,
+    amount: float,
+) -> bool:
+    """Envia aviso no Telegram de que a ordem 1 deu loss e o Gale está sendo executado."""
+    try:
+        bot_token, chat_id = _get_configuration()
+    except Exception:
+        return False
+
+    dir_emoji = "🟢 CALL" if direction.upper() == "CALL" else "🔴 PUT"
+    lines = [
+        f"⚡ *EXECUTANDO GALE {gale_num}*",
+        f"💹 *Ativo:* `{_escape_md(asset)}`",
+        f"🎯 *Direção:* {dir_emoji}",
+        f"💵 *Entrada:* `${amount:.2f}`",
+        "⏳ _Aguardando fechamento da vela\\.\\.\\._",
+    ]
+    message_text = "\n".join(lines)
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message_text, "parse_mode": "MarkdownV2"},
+            timeout=6,
+        )
+        return True
+    except Exception:
+        return False
+
