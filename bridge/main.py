@@ -100,6 +100,22 @@ _login_attempts: Dict[str, deque] = {}
 _login_attempts_lock = threading.Lock()
 
 
+def check_rate_limit(key: str, max_attempts: int = 5, window_seconds: float = 60.0) -> None:
+    """Valida rate limit por chave em memória (IP, usuário, endpoint)."""
+    now = time.monotonic()
+    with _login_attempts_lock:
+        attempts = _login_attempts.setdefault(key, deque())
+        while attempts and now - attempts[0] > window_seconds:
+            attempts.popleft()
+        if len(attempts) >= max_attempts:
+            raise HTTPException(
+                status_code=429,
+                detail="Muitas tentativas em pouco tempo. Aguarde um minuto e tente novamente.",
+            )
+        attempts.append(now)
+
+
+
 class WsClient:
     """1 cliente WS autenticado. Tem sua própria fila limitada de msgs pendentes."""
 
@@ -307,16 +323,38 @@ async def _session_expiry_loop():
 
 
 # ===================================================================
-# App FastAPI + middleware CORS
+# App FastAPI + Headers de Segurança + CORS
 # ===================================================================
-app = FastAPI(title="RW TIPS Bridge (tempo real IQ Option)", lifespan=lifespan)
+# Oculta documentação Swagger/OpenAPI pública em produção
+_enable_docs = os.getenv("ENABLE_DOCS", "false").lower() in ("true", "1", "yes")
 
-# CORS irrestrito para suportar acessos via Vercel e outros domínios
+app = FastAPI(
+    title="RW TIPS Bridge (tempo real IQ Option)",
+    lifespan=lifespan,
+    docs_url="/docs" if _enable_docs else None,
+    redoc_url="/redoc" if _enable_docs else None,
+    openapi_url="/openapi.json" if _enable_docs else None,
+)
+
+# Headers HTTP de segurança (mitigação de XSS, sniffing de MIME e clickjacking)
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+# CORS configurado conforme CORS_ORIGINS de config.py
+_cors_origins = config.CORS_ORIGINS if (config.CORS_ORIGINS and "*" not in config.CORS_ORIGINS) else ["*"]
+_cors_allow_creds = False if "*" in _cors_origins else True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_creds,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
 
@@ -374,14 +412,9 @@ async def create_session(payload: IQLoginRequest, request: Request):
     if "@" not in payload.email or payload.email.startswith("@") or payload.email.endswith("@"):
         raise HTTPException(status_code=422, detail="Informe um e-mail válido.")
     client_ip = request.client.host if request.client else "unknown"
-    now = time.monotonic()
-    with _login_attempts_lock:
-        attempts = _login_attempts.setdefault(client_ip, deque())
-        while attempts and now - attempts[0] > 60:
-            attempts.popleft()
-        if len(attempts) >= 5:
-            raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um minuto e tente novamente.")
-        attempts.append(now)
+    # Blindagem dupla contra força bruta: por IP e por conta de e-mail alvo
+    check_rate_limit(f"session_ip:{client_ip}", max_attempts=5, window_seconds=60.0)
+    check_rate_limit(f"session_acc:{payload.email.strip().lower()}", max_attempts=5, window_seconds=60.0)
     try:
         session = await asyncio.to_thread(
             session_manager.create, payload.email, payload.password, payload.account_type
@@ -739,10 +772,13 @@ class AdminUserRequest(BaseModel):
 @app.post("/admin/users", status_code=201)
 def create_admin_user(
     payload: AdminUserRequest,
+    request: Request,
     cred: HTTPAuthorizationCredentials = Depends(bearer),
 ):
     if cred is None:
         raise HTTPException(status_code=401, detail="Autentique-se para continuar.")
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(f"admin_user_ip:{client_ip}", max_attempts=10, window_seconds=60.0)
     admin_auth.require_admin(cred.credentials)
     return admin_auth.create_limited_user(
         payload.email,

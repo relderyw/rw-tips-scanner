@@ -38,11 +38,16 @@ def _initialize_firebase_admin():
         credential = credentials.Certificate(service_account)
     else:
         if not credentials_path:
-            local_path = os.path.join(
-                _REPO_DIR, "rw-tips-firebase-adminsdk-fbsvc-83ccc19671.json"
-            )
-            if os.path.isfile(local_path):
-                credentials_path = local_path
+            configured_filename = os.getenv("FIREBASE_SERVICE_ACCOUNT_FILE")
+            if configured_filename and os.path.isfile(os.path.join(_REPO_DIR, configured_filename)):
+                credentials_path = os.path.join(_REPO_DIR, configured_filename)
+            else:
+                for fname in os.listdir(_REPO_DIR):
+                    if fname.startswith("rw-tips-firebase-adminsdk") and fname.endswith(".json"):
+                        candidate = os.path.join(_REPO_DIR, fname)
+                        if os.path.isfile(candidate):
+                            credentials_path = candidate
+                            break
         if not credentials_path:
             raise HTTPException(
                 status_code=503,
