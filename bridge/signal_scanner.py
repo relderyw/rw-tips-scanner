@@ -484,6 +484,7 @@ class SessionScanner:
         # 3. Consulta direta no client da IQ Option se conectado
         if self.collector and getattr(self.collector, "client", None) and getattr(self.collector, "connected", False):
             try:
+                # pyrefly: ignore [missing-import]
                 from iqoptionapi.constants import InstrumentType
                 client = self.collector.client
                 actives = client.get_actives(InstrumentType.BINARY_OPTION) or {}
