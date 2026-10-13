@@ -575,40 +575,13 @@ class SessionScanner:
 
         if effective_payout < self.min_payout:
             log.warning(
-                "[%s] 🛑 Entrada e sinal bloqueados para %s: payout atual (%d%%) menor que o mínimo configurado (%d%%)",
+                "[%s] 🛑 Entrada e sinal bloqueados para %s: payout atual (%d%%) < mínimo (%d%%)",
                 self.session_token[:8], sig.asset, effective_payout, self.min_payout,
             )
             return
 
-        # ⚡ PRIORIDADE MÁXIMA: Dispara trade imediatamente para cravar a abertura da vela no PONTO A
-        order_info = ""
-        trade_status = "not_executed"
-        trade_res = None
+        # ── Prepara metadados ANTES de qualquer I/O de rede ────────────────
         tf_exp = 1 if sig.timeframe == "M1" else (5 if sig.timeframe == "M5" else 15)
-
-        if self.auto_trade and self.collector:
-            try:
-                ok, res = self.collector.execute_trade(
-                    asset=sig.asset,
-                    direction=sig.direction,
-                    expiry=tf_exp,
-                    amount=self.stake,
-                    min_payout=self.min_payout,
-                )
-                if ok:
-                    trade_status = "executed"
-                    trade_res = str(res)
-                    order_info = f"Ordem #{res} (${self.stake:.2f})"
-                    log.info("[%s] ⚡ Auto-trade IMEDIATO executado: %s %s | #%s", self.session_token[:8], sig.asset, sig.direction, res)
-                else:
-                    trade_status = f"failed: {res}"
-                    order_info = f"Falha na entrada: {res}"
-                    log.warning("[%s] Auto-trade rejeitado: %s %s: %s", self.session_token[:8], sig.asset, sig.direction, res)
-            except Exception as e_trade:
-                trade_status = f"error: {e_trade}"
-                order_info = f"Erro: {e_trade}"
-                log.error("[%s] Erro ao executar auto-trade imediato: %s", self.session_token[:8], e_trade)
-
         entry_time_str = time.strftime("%H:%M", time.localtime(sig.candle_time))
         signal_id = _make_signal_id(sig)
         account_type = getattr(self.collector, "account_type", "PRACTICE") if self.collector else "PRACTICE"
@@ -633,28 +606,23 @@ class SessionScanner:
 
         display_name = f"{pair_formatted} (OTC)" if is_otc else pair_formatted
 
-        # Se a ordem foi executada com sucesso, inicia o monitor de Gale 1
-        if trade_res:
-            threading.Thread(
-                target=self._monitor_trade_and_run_gale,
-                args=(sig, trade_res, tf_exp, self.stake, signal_id, display_name, account_type),
-                daemon=True,
-                name=f"gale-watcher-{trade_res}",
-            ).start()
-
-        msg_text = _build_telegram_message(
-            sig, entry_time_str,
-            account_type=account_type,
-            order_info=order_info,
-            display_name=display_name,
-        )
-
         log.info(
             "[%s] SINAL: %s %s [%s] conf=%d%% payout=%d%% conta=%s",
             self.session_token[:8], display_name, sig.direction,
             sig.timeframe, sig.confidence, sig.payout, account_type,
         )
 
+        # ── 🚀 PRIORIDADE MÁXIMA: Telegram IMEDIATO — antes do trade ────────
+        # O sinal chega ao usuário no instante do fechamento da vela,
+        # garantindo tempo para entrar manualmente no "nascimento" da próxima.
+        msg_text = _build_telegram_message(
+            sig, entry_time_str,
+            account_type=account_type,
+            order_info="",   # sem info de ordem ainda — atualizado após o trade
+            display_name=display_name,
+        )
+
+        status = "not_sent"
         try:
             sent = telegram_notifications.send_signal(
                 signal_id=signal_id,
@@ -667,6 +635,8 @@ class SessionScanner:
                 message_text=msg_text,
             )
             status = "sent" if sent else "duplicate"
+            log.info("[%s] 📱 Telegram disparado imediatamente ao fechamento da vela",
+                     self.session_token[:8])
         except telegram_notifications.TelegramConfigurationError as e:
             log.warning("Telegram não configurado: %s", e)
             status = "no_telegram"
@@ -674,6 +644,7 @@ class SessionScanner:
             log.error("Falha ao enviar sinal ao Telegram: %s", e)
             status = "error"
 
+        # Registra o sinal imediatamente (trade ainda não executado)
         record = {
             "signal_id":    signal_id,
             "asset":        sig.asset,
@@ -690,14 +661,69 @@ class SessionScanner:
             "status":       status,
             "account_type": account_type,
             "auto_trade":   self.auto_trade,
-            "trade_status": trade_status,
-            "order_info":   order_info,
+            "trade_status": "not_executed",
+            "order_info":   "",
         }
         with self._lock:
             self.signals_history.append(record)
-            # Mantém apenas os últimos 200
             if len(self.signals_history) > 200:
                 self.signals_history = self.signals_history[-200:]
+
+        # ── 🔄 Trade + Gale em thread separada (não bloqueia o Telegram) ────
+        if self.auto_trade and self.collector:
+            threading.Thread(
+                target=self._execute_trade_and_monitor,
+                args=(sig, tf_exp, signal_id, display_name, account_type),
+                daemon=True,
+                name=f"trade-{signal_id[:8]}",
+            ).start()
+
+    def _execute_trade_and_monitor(
+        self,
+        sig: ScannerSignal,
+        tf_exp: int,
+        signal_id: str,
+        display_name: str,
+        account_type: str,
+    ) -> None:
+        """Executa ordem e monitora gale/resultado em background.
+        Roda em thread daemon separada para não atrasar o Telegram."""
+        order_info = ""
+        trade_status = "not_executed"
+        trade_res = None
+
+        try:
+            ok, res = self.collector.execute_trade(
+                asset=sig.asset,
+                direction=sig.direction,
+                expiry=tf_exp,
+                amount=self.stake,
+                min_payout=self.min_payout,
+            )
+            if ok:
+                trade_status = "executed"
+                trade_res = str(res)
+                order_info = f"Ordem #{res} (${self.stake:.2f})"
+                log.info("[%s] ⚡ Auto-trade executado: %s %s | #%s",
+                         self.session_token[:8], sig.asset, sig.direction, res)
+            else:
+                trade_status = f"failed: {res}"
+                order_info = f"Falha na entrada: {res}"
+                log.warning("[%s] Auto-trade rejeitado: %s %s: %s",
+                            self.session_token[:8], sig.asset, sig.direction, res)
+        except Exception as e_trade:
+            trade_status = f"error: {e_trade}"
+            order_info = f"Erro: {e_trade}"
+            log.error("[%s] Erro ao executar auto-trade: %s", self.session_token[:8], e_trade)
+
+        # Actualiza o registro do sinal com resultado da ordem
+        self._update_signal_record(signal_id, trade_status, order_info=order_info)
+
+        # Inicia monitor de Gale / resultado se houver ordem aberta
+        if trade_res:
+            self._monitor_trade_and_run_gale(
+                sig, trade_res, tf_exp, self.stake, signal_id, display_name, account_type,
+            )
 
     def get_best_strategies(self, top_n: int = 15) -> List[dict]:
         """Calcula assertividade histórica real de estratégias x paridade x timeframe de forma rápida e com EV real."""
@@ -927,12 +953,15 @@ class SessionScanner:
 
         return "LOSS", 0.0
 
-    def _update_signal_record(self, signal_id: str, trade_status: str, result_label: str):
+    def _update_signal_record(self, signal_id: str, trade_status: str, result_label: str = "", order_info: str = ""):
         with self._lock:
             for s in self.signals_history:
                 if s.get("signal_id") == signal_id:
                     s["trade_status"] = trade_status
-                    s["result_label"] = result_label
+                    if result_label:
+                        s["result_label"] = result_label
+                    if order_info:
+                        s["order_info"] = order_info
                     break
 
     def get_signals(self, limit: int = 50) -> List[dict]:
