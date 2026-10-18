@@ -469,23 +469,31 @@ class Collector(threading.Thread):
     # Resolução de nomes de ativos
     # ===================================================================
     def binary_option_actives(self) -> List[dict]:
-        """Return the currently open binary-option assets and their IQ payouts."""
+        """Return ALL currently open binary and turbo assets directly from IQ Option (100% dynamic)."""
         if not self.connected or self.client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
         actives = {}
         try:
             with self._market_data_lock:
-                actives = self.client.get_actives(InstrumentType.BINARY_OPTION) or {}
+                try:
+                    turbo = self.client.get_actives(InstrumentType.TURBO_OPTION) or {}
+                    actives.update(turbo)
+                except Exception as e_t:
+                    log.warning("get_actives(TURBO_OPTION) falhou: %s", e_t)
+                try:
+                    binary = self.client.get_actives(InstrumentType.BINARY_OPTION) or {}
+                    for k, v in binary.items():
+                        if k not in actives or (v.get("profit_percent") or 0) > (actives[k].get("profit_percent") or 0):
+                            actives[k] = v
+                except Exception as e_b:
+                    log.warning("get_actives(BINARY_OPTION) falhou: %s", e_b)
         except Exception as e_act:
             log.warning("get_actives() falhou no collector: %s", e_act)
 
-        rows = []
+        merged_actives = {}
         for active_id, info in actives.items():
             ticker = (info.get("ticker") or "").strip()
             if not ticker or not info.get("is_open"):
-                continue
-            # Ignora ativos exóticos que a biblioteca não suporta candles
-            if ticker not in UNDERLYING_ASSESTS:
                 continue
             try:
                 payout = int(info.get("profit_percent") or 0)
@@ -494,24 +502,44 @@ class Collector(threading.Thread):
                 continue
             if payout <= 0 or payout >= 100:
                 continue
-            name = (info.get("name") or "").strip()
-            rows.append({
-                "asset": ticker,
-                "name": name or ticker,
-                "active_id": normalized_id,
-                "payout": payout,
-                "is_open": True,
-                "candles_supported": True,
-            })
 
-        # Fallback confiável para self.payouts
+            clean = re.sub(r"[^A-Z0-9]", "", ticker.replace("-op", "").replace("-OTC", "")).upper()
+            is_valid_format = bool(re.match(r"^[A-Z0-9]{3,12}$", clean))
+            candles_supported = bool(
+                ticker in UNDERLYING_ASSESTS
+                or f"{ticker}-op" in UNDERLYING_ASSESTS
+                or f"{ticker}-OTC" in UNDERLYING_ASSESTS
+                or clean in UNDERLYING_ASSESTS
+                or ticker in config.ASSET_IDS
+                or clean in config.ASSET_IDS
+                or (is_valid_format and "NOT-A-LIBRARY" not in ticker)
+            )
+            if candles_supported:
+                UNDERLYING_ASSESTS[ticker] = normalized_id
+                if clean:
+                    UNDERLYING_ASSESTS[clean] = normalized_id
+
+            name = (info.get("name") or ticker).strip()
+            if ticker not in merged_actives or payout > merged_actives[ticker]["payout"]:
+                merged_actives[ticker] = {
+                    "asset": ticker,
+                    "name": name,
+                    "active_id": normalized_id,
+                    "payout": payout,
+                    "is_open": True,
+                    "candles_supported": candles_supported,
+                }
+
+        rows = list(merged_actives.values())
+
+        # Fallback confiável para self.payouts caso a API falhe temporariamente
         if not rows and self.payouts:
             for ticker, pay in self.payouts.items():
-                if pay > 0 and (ticker in UNDERLYING_ASSESTS or ticker in config.ASSET_IDS):
+                if pay > 0:
                     rows.append({
                         "asset": ticker,
                         "name": ticker,
-                        "active_id": config.ASSET_IDS.get(ticker, 0),
+                        "active_id": 0,
                         "payout": pay,
                         "is_open": True,
                         "candles_supported": True,
@@ -520,13 +548,25 @@ class Collector(threading.Thread):
         return sorted(rows, key=lambda row: (-(row["payout"] or 0), row["asset"]))
 
     def binary_option_candles(self, asset: str, tf_id: str, hours: int) -> list:
-        """Fetch and cache historical candles for a library-known binary asset."""
-        if asset not in UNDERLYING_ASSESTS:
-            raise ValueError("Ativo binário inválido.")
+        """Fetch and cache historical candles for any dynamic binary asset."""
         if tf_id not in self.timeframes:
             raise ValueError("Timeframe inválido.")
         if not self.connected or self.client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
+
+        lookup_asset = asset
+        if lookup_asset not in UNDERLYING_ASSESTS:
+            clean = asset.replace("-op", "").replace("/", "")
+            if clean in UNDERLYING_ASSESTS:
+                lookup_asset = clean
+            elif f"{clean}-op" in UNDERLYING_ASSESTS:
+                lookup_asset = f"{clean}-op"
+            elif f"{clean}-OTC" in UNDERLYING_ASSESTS:
+                lookup_asset = f"{clean}-OTC"
+            elif clean in config.ASSET_IDS:
+                lookup_asset = config.ASSETS.get(clean, clean)
+            else:
+                raise ValueError(f"Ativo '{asset}' não suportado para consulta de candles.")
 
         timeframe = self.timeframes[tf_id]
         now = self._server_now()
@@ -543,7 +583,7 @@ class Collector(threading.Thread):
             while len(collected) < target_count:
                 count = min(MAX_CANDLES_PER_CALL, target_count - len(collected))
                 raw = self.client.get_candles(
-                    asset, count=count, timeframe=timeframe, end_time=end_time
+                    lookup_asset, count=count, timeframe=timeframe, end_time=end_time
                 ) or []
                 if not raw:
                     break
@@ -582,24 +622,25 @@ class Collector(threading.Thread):
         if self.client is None:
             raise RuntimeError("resolve_asset_names sem cliente conectado")
         with self._resolver_lock:
+            actives_open_info: Dict[Any, Dict] = {}
             try:
                 with self._market_data_lock:
-                    actives_open_info = self.client.get_actives(InstrumentType.BINARY_OPTION) or {}
-            except Exception as e:  # noqa: BLE001
-                log.warning("get_actives() falhou, usando candidatos padrão: %s", e)
-                actives_open_info = {}
+                    try:
+                        turbo = self.client.get_actives(InstrumentType.TURBO_OPTION) or {}
+                        actives_open_info.update(turbo)
+                    except Exception as e_t:
+                        log.warning("get_actives(TURBO_OPTION) falhou: %s", e_t)
+                    try:
+                        binary = self.client.get_actives(InstrumentType.BINARY_OPTION) or {}
+                        for k, v in binary.items():
+                            if k not in actives_open_info or (v.get("profit_percent") or 0) > (actives_open_info[k].get("profit_percent") or 0):
+                                actives_open_info[k] = v
+                    except Exception as e_b:
+                        log.warning("get_actives(BINARY_OPTION) falhou: %s", e_b)
+            except Exception as e:
+                log.warning("get_actives() falhou: %s", e)
 
-            # Mapa ticker (ex.: 'EURUSD-op') -> {is_open, profit_percent}
-            ticker_info: Dict[str, Dict] = {}
-            for _act_id, info in actives_open_info.items():
-                t = (info.get("ticker") or "").strip()
-                if t:
-                    ticker_info[t] = info
-                    norm = re.sub(r"[^A-Z0-9]", "", t.upper())
-                    if norm:
-                        ticker_info[norm] = info
-
-            # 1. Descoberta dinâmica de TODOS os pares abertos na corretora suportados pela biblioteca
+            # 1. Descoberta dinamica de TODOS os pares abertos na corretora (Turbo + Binary)
             dynamic_open_pairs: Dict[str, dict] = {}
             for act_id_int, act_data in actives_open_info.items():
                 if not act_data.get("is_open"):
@@ -609,18 +650,16 @@ class Collector(threading.Thread):
                 if payout_val <= 0 or not t_raw:
                     continue
 
-                # Localiza candidato correspondente em UNDERLYING_ASSESTS
-                supported_cand = None
                 clean_sym = re.sub(r"[^A-Z0-9]", "", t_raw.replace("-op", "").replace("-OTC", "").replace("(OTC)", "")).upper()
+                is_otc = ("-OTC" in t_raw or "(OTC)" in t_raw or "OTC" in t_raw)
+                asset_key = f"{clean_sym}-OTC" if is_otc else clean_sym
+
+                # Seleciona ticker suportado se existir
+                supported_cand = t_raw
                 for test_cand in [t_raw, f"{clean_sym}-op", f"{clean_sym}-OTC-op", f"{clean_sym}-OTC", clean_sym]:
                     if test_cand in UNDERLYING_ASSESTS:
                         supported_cand = test_cand
                         break
-                if not supported_cand:
-                    continue
-
-                is_otc = ("-OTC" in t_raw or "(OTC)" in t_raw or "-OTC" in supported_cand)
-                asset_key = f"{clean_sym}-OTC" if is_otc else clean_sym
 
                 if asset_key not in dynamic_open_pairs or payout_val > dynamic_open_pairs[asset_key]["payout"]:
                     dynamic_open_pairs[asset_key] = {
@@ -630,63 +669,18 @@ class Collector(threading.Thread):
                         "payout": payout_val,
                     }
 
-            # Ordena por maior payout descendente e seleciona o top do mercado aberto (até 25 pares)
+            # Todos os pares abertos ordenados por maior payout descendente
             sorted_open = sorted(dynamic_open_pairs.values(), key=lambda x: x["payout"], reverse=True)
-            top_selected = {x["asset_id"]: x for x in sorted_open[:25]}
+            top_selected = {x["asset_id"]: x for x in sorted_open}
 
-            # 2. Assegura também resolução dos pares baseline de config.ASSET_IDS
-            for asset_id in config.ASSET_IDS:
-                candidates = config.ASSET_IQ_NAMES.get(asset_id, [])
-                chosen = None
-                chosen_open = False
-                chosen_pay = 0
-                for cand in candidates:
-                    if cand not in UNDERLYING_ASSESTS:
-                        continue
-                    act_id = UNDERLYING_ASSESTS.get(cand)
-                    info = actives_open_info.get(act_id) if act_id is not None else None
-                    if not info:
-                        info = ticker_info.get(cand)
-                    if not info:
-                        cand_norm = re.sub(r"[^A-Z0-9]", "", cand.upper())
-                        info = ticker_info.get(cand_norm)
-
-                    is_open = bool(info.get("is_open", False)) if info else False
-                    pay = int(info.get("profit_percent", 0)) if info else 0
-                    if chosen is None:
-                        chosen = cand
-                        chosen_open = is_open
-                        chosen_pay = pay
-                    if is_open:
-                        chosen = cand
-                        chosen_open = True
-                        chosen_pay = pay
-                        break
-
-                if chosen is None:
-                    chosen = candidates[0] if candidates else asset_id
-                    chosen_open = False
-                    chosen_pay = 0
-
-                if chosen_open:
-                    top_selected[asset_id] = {
-                        "asset_id": asset_id,
-                        "ticker": chosen,
-                        "active_id": UNDERLYING_ASSESTS.get(chosen, 0),
-                        "payout": chosen_pay,
-                    }
-                else:
-                    self.asset_resolved[asset_id] = chosen
-                    self.asset_is_open[asset_id] = False
-
-            # Atualiza lista de ativos monitorados ativos
-            self.monitored_assets = list(top_selected.keys()) if top_selected else list(config.ASSET_IDS)
-            for aid, item in top_selected.items():
-                self.asset_resolved[aid] = item["ticker"]
-                self.asset_is_open[aid] = True
-                if item["payout"] > 0:
-                    self.payouts[aid] = item["payout"]
-                    self.payouts[item["ticker"]] = item["payout"]
+            if top_selected:
+                self.monitored_assets = list(top_selected.keys())
+                for aid, item in top_selected.items():
+                    self.asset_resolved[aid] = item["ticker"]
+                    self.asset_is_open[aid] = True
+                    if item["payout"] > 0:
+                        self.payouts[aid] = item["payout"]
+                        self.payouts[item["ticker"]] = item["payout"]
 
             # Registra dinamicamente novos StreamKeys necessários
             new_keys_to_sub = []

@@ -757,7 +757,7 @@ class SessionScanner:
             ]
             assets_to_test.sort(key=lambda a: self.payouts.get(a, 0), reverse=True)
         else:
-            assets_to_test = list(config.ASSET_IDS)
+            assets_to_test = list(getattr(self.collector, "monitored_assets", config.ASSET_IDS) if self.collector else config.ASSET_IDS)
         timeframes = ["M1", "M5"]
 
         # Limita aos top 8 ativos para responder rápido mantendo o ranking completo

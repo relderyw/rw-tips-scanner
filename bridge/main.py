@@ -619,6 +619,7 @@ def send_telegram_daily_summary(
     return {"sent": True, "stats": stats, "account_filter": act_filter}
 
 
+@app.get("/dashboard-stats")
 @app.get("/scanner/dashboard-stats")
 def get_scanner_dashboard_stats(
     start_date: Optional[str] = Query(None),
@@ -668,14 +669,12 @@ def candles(
     """Returns closed candles only for the authenticated IQ account."""
     if tf not in session.collector.timeframes:
         raise HTTPException(status_code=400, detail="asset ou tf inválido")
-    if asset not in config.ASSET_IDS:
-        try:
-            return session.collector.binary_option_candles(asset, tf, hours)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except ConnectionError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return db.query(asset, tf, hours, session.collector.db_path)
+    try:
+        return session.collector.binary_option_candles(asset, tf, hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/actives")

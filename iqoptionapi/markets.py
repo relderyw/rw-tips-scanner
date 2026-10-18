@@ -3,14 +3,23 @@ import logging
 from typing import Any, List, Dict
 from iqoptionapi.utilities import get_asset_id
 from iqoptionapi.models import InstrumentType
+from iqoptionapi.instruments.options_assests import UNDERLYING_ASSESTS
 
 logger = logging.getLogger(__name__)
 
 def _to_seconds(t: int) -> int:
     """Normalize a UNIX timestamp that may be in ms or s to seconds."""
-    return int(t // 1000) if t > 1_000_000_000_000 else int(t)
+    if not t:
+        return int(time.time())
+    try:
+        t_val = int(t)
+        return int(t_val // 1000) if t_val > 1_000_000_000_000 else t_val
+    except Exception:
+        return int(time.time())
 
 def is_market_open(schedule: list, server_time: int) -> bool:
+    if not schedule:
+        return True
     now = _to_seconds(server_time)
     return any(
         int(w[0]) <= now <= int(w[1])
@@ -95,6 +104,7 @@ class MarketManager:
             print("No candle data available")
             return
 
+        # pyrefly: ignore [missing-import]
         import mplfinance as mpf
         import pandas as pd
         
@@ -210,16 +220,26 @@ class MarketManager:
     
         """
 
+        # Check if already cached in message_handler
+        inst_val = instrument_type.value if hasattr(instrument_type, "value") else str(instrument_type)
+        cached = getattr(self.message_handler, "_underlying_assests", None)
+        if cached and isinstance(cached, dict) and inst_val in cached:
+            return cached
+
         # Reset state to ensure fresh data
         self.message_handler._underlying_assests = None
 
         self.ws_manager.send_message('sendMessage', self._build_msg_body(instrument_type))
 
-        # Wait for response (blocking operation)
-        while self.message_handler._underlying_assests == None:
-            time.sleep(.1)
+        # Wait for response with 8s timeout to prevent thread deadlock
+        start_wait = time.time()
+        while self.message_handler._underlying_assests is None:
+            if time.time() - start_wait > 8.0:
+                logger.warning(f"Timeout aguardando underlying_assests para {instrument_type}")
+                return {}
+            time.sleep(.05)
 
-        return self.message_handler._underlying_assests
+        return self.message_handler._underlying_assests or {}
 
 
     def save_underlying_assests_to_file(self):
@@ -380,8 +400,8 @@ class MarketManager:
         """
         Extracts actives status from initialization data.
         """
-        data = self.get_underlying_assests(instrument_type)
-        server_time = self.message_handler.server_time
+        data = self.get_underlying_assests(instrument_type) or {}
+        server_time = _to_seconds(self.message_handler.server_time)
         category_data = data.get(instrument_type.value, {})
         actives_dict = category_data.get("actives", {})
         
@@ -392,21 +412,32 @@ class MarketManager:
             schedule = info.get("schedule", [])
             
             # Check if currently in an open window
-            market_open = is_market_open(schedule, server_time//1000)
+            market_open = is_market_open(schedule, server_time)
             market_open = is_enabled and not is_suspended and market_open
-            if not market_open:continue
+            if not market_open:
+                continue
 
             # Profit Calculation (100 - commission)
             commission = info.get("option", {}).get("profit", {}).get("commission", 0)
             commission = 100 - commission if commission > 0 else 0
 
+            ticker = (info.get("ticker") or "").strip()
+            name = (info.get("name") or ticker).strip()
+
+            # Dynamic registration directly from broker (no mock/static assets)
+            if ticker:
+                UNDERLYING_ASSESTS[ticker] = int(active_id)
+                clean_sym = ticker.replace("-op", "").replace("-OTC", "")
+                if clean_sym:
+                    UNDERLYING_ASSESTS[clean_sym] = int(active_id)
+
             # Detailed Status
             results[int(active_id)] = {
-                # "name": info.get("name"),
-                "ticker": info.get("ticker"),
+                "name": name,
+                "ticker": ticker,
                 "is_open": market_open,
                 "profit_percent": commission,
-                # "schedule": schedule
+                "schedule": schedule
             }
 
         return results

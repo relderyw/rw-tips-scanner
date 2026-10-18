@@ -28,8 +28,8 @@ export default function Assets() {
   };
 
   useEffect(() => {
-    if (connected && !status.activeAssetsAt) void refresh();
-  }, [connected, status.activeAssetsAt]);
+    if (connected) void refresh();
+  }, [connected]);
 
   const assets = status.activeAssets;
 

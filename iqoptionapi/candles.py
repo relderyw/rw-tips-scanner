@@ -369,10 +369,15 @@ class CandleSubscriptionManager:
         
         # FIXED: Get asset name from ID using id_to_name
         asset_name = self.id_to_name.get(asset_id)
-
         if not asset_name:
-            logger.warning(f"Unknown asset_id: {asset_id}")
-            return
+            for k, v in UNDERLYING_ASSESTS.items():
+                if v == asset_id:
+                    asset_name = k
+                    self.id_to_name[asset_id] = k
+                    break
+        if not asset_name:
+            asset_name = str(asset_id)
+            self.id_to_name[asset_id] = asset_name
         
         logger.debug(f"Received candle: {asset_name} {timeframe}s @ {msg.get('from')}")
         
@@ -448,6 +453,14 @@ class CandleSubscriptionManager:
         
         # FIXED: Get asset ID from name_to_id
         asset_id = self.name_to_id.get(asset)
+        if not asset_id:
+            try:
+                from iqoptionapi.utilities import get_asset_id
+                asset_id = get_asset_id(asset)
+                self.name_to_id[asset] = asset_id
+                self.id_to_name[asset_id] = asset
+            except Exception:
+                pass
         if not asset_id:
             logger.error(f"Unknown asset: {asset}. Available: {list(self.name_to_id.keys())[:10]}")
             return False

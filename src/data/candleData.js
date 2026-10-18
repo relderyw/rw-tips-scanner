@@ -111,10 +111,11 @@ function displayIQAsset(ticker, rawName) {
 export function getAvailableAssets({ analysisOnly = false } = {}) {
   const status = getStatus();
   if (getIQSessionToken()) {
-    if (!status.activeAssetsAt) return [];
-    return analysisOnly
-      ? status.activeAssets.filter((asset) => asset.analysisSupported)
-      : status.activeAssets;
+    if (status.activeAssets && status.activeAssets.length > 0) {
+      return analysisOnly
+        ? status.activeAssets.filter((asset) => asset.analysisSupported)
+        : status.activeAssets;
+    }
   }
   return ASSETS;
 }

@@ -148,6 +148,10 @@ def generate_request_id(request_id: Optional[str] = None) -> str:
 
 
 def get_asset_id(asset_name: str) -> int:
+    if isinstance(asset_name, int):
+        return asset_name
+    if isinstance(asset_name, str) and asset_name.isdigit():
+        return int(asset_name)
     if asset_name in UNDERLYING_ASSESTS:
         return UNDERLYING_ASSESTS[asset_name]
     # Se nao encontrado direto, tenta sufixos comuns (mercado OTC ou binarias -op)
@@ -169,4 +173,4 @@ def get_asset_id(asset_name: str) -> int:
         k_clean = k.upper().replace("/", "").replace(" ", "").replace("-", "")
         if k_clean.startswith(clean) or clean in k_clean:
             return v
-    raise KeyError(f"Asset '{asset_name}' not found in underlying assets")
+    return UNDERLYING_ASSESTS.get(asset_name, 0)
