@@ -465,6 +465,31 @@ class Collector(threading.Thread):
             log.warning("Erro ao buscar histórico de posições na IQ: %s", e)
             return []
 
+    def position_history_between(self, start_time: str, end_time: str) -> list:
+        client = self.client
+        if not self.connected or client is None:
+            raise ConnectionError("A conexão com a IQ Option está indisponível.")
+
+        try:
+            with self._account_data_lock:
+                positions = client.get_position_history_by_time(
+                    [
+                        "marginal-forex", "marginal-cfd", "marginal-crypto",
+                        "digital-option", "blitz-option", "turbo-option", "binary-option",
+                    ],
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            if not isinstance(positions, list):
+                raise TypeError("A IQ Option retornou um formato inválido para o histórico.")
+            return positions
+        except TimeoutError:
+            log.warning("Timeout ao buscar histórico de posições na IQ Option.")
+            raise
+        except Exception as e:
+            log.error("Erro ao buscar histórico de posições na IQ: %s", e)
+            raise LookupError("Não foi possível consultar o histórico da IQ Option.") from e
+
     # ===================================================================
     # Resolução de nomes de ativos
     # ===================================================================

@@ -202,6 +202,11 @@ export default function Dashboard() {
           <span>{error}</span>
         </div>
       )}
+      {data?.data_source === 'iq_option' && (
+        <div className="mb-4 rounded-xl border border-cyan-500/30 bg-cyan-500/[0.06] p-3 text-xs text-cyan-200">
+          Histórico consultado diretamente na conta {data.source_account_type === 'REAL' ? 'Real' : 'Demo'} conectada à IQ Option.
+        </div>
+      )}
 
       {/* BARRA DE FILTROS SUPERIOR */}
       <div className="card mb-6 p-4 sm:p-5 border-line bg-panel">

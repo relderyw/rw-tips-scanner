@@ -38,6 +38,7 @@ import threading
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Dict, List, Literal, Optional, Set
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -628,6 +629,44 @@ def get_scanner_dashboard_stats(
     session: Optional[UserSession] = Depends(optional_iq_session),
 ):
     """Retorna dados analíticos completos para o Dashboard da plataforma com filtro de datas."""
+    if session:
+        session_account = str(session.collector.account_type or "").lower()
+        is_demo = "practice" in session_account or "demo" in session_account
+        source_account_type = "PRACTICE" if is_demo else "REAL"
+        requested_account = account_type.lower()
+        account_matches = (
+            requested_account == "both"
+            or requested_account in (("demo", "practice") if is_demo else ("real",))
+        )
+        if account_matches:
+            start = start_date or time.strftime("%Y-%m-%d")
+            end = end_date or time.strftime("%Y-%m-%d")
+            try:
+                datetime.strptime(start, "%Y-%m-%d")
+                datetime.strptime(end, "%Y-%m-%d")
+                if start > end:
+                    raise ValueError("A data inicial deve ser anterior à data final.")
+                positions = session.collector.position_history_between(
+                    f"{start} 00:00:00",
+                    f"{end} 23:59:59",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except ConnectionError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except TimeoutError as exc:
+                raise HTTPException(status_code=504, detail="Tempo limite ao consultar o histórico da IQ Option.") from exc
+            except LookupError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            normalized_positions = [_position_for_api(position) for position in positions]
+            return telegram_notifications.get_dashboard_analytics(
+                start_date=start,
+                end_date=end,
+                account_filter=requested_account,
+                positions=normalized_positions,
+                source_account_type=source_account_type,
+            )
+
     owner_id = session.identity_hash if session else None
     return telegram_notifications.get_dashboard_analytics(
         owner_id=owner_id,

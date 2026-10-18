@@ -788,6 +788,8 @@ def get_dashboard_analytics(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_filter: str = "both",
+    positions: Optional[list[dict]] = None,
+    source_account_type: Optional[str] = None,
 ) -> dict:
     """Retorna dados analíticos completos para o Dashboard da plataforma com filtro de datas."""
     hashed_owner = hashlib.sha256(owner_id.encode("utf-8")).hexdigest() if owner_id else None
@@ -795,32 +797,74 @@ def get_dashboard_analytics(
     s_date = start_date or today_str
     e_date = end_date or today_str
 
-    with _db_lock:
-        with _connection() as connection:
-            rows = []
-            if hashed_owner:
-                query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
-                           FROM telegram_daily_operations
-                           WHERE (owner_id=? OR owner_id='global' OR owner_id='') AND date_str >= ? AND date_str <= ?"""
-                params = [hashed_owner, s_date, e_date]
-                if account_filter == "real":
-                    query += " AND account_type='REAL'"
-                elif account_filter in ("demo", "practice"):
-                    query += " AND account_type='PRACTICE'"
-                query += " ORDER BY created_at ASC"
-                rows = connection.execute(query, params).fetchall()
+    if positions is not None:
+        rows = []
+        for position in positions:
+            status = str(position.get("status") or "").lower()
+            close_time = position.get("close_time")
+            if status not in {"closed", "complete", "completed", "finished", "settled", "expired"} and not close_time:
+                continue
 
-            if not rows:
-                query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
-                           FROM telegram_daily_operations
-                           WHERE date_str >= ? AND date_str <= ?"""
-                params = [s_date, e_date]
-                if account_filter == "real":
-                    query += " AND account_type='REAL'"
-                elif account_filter in ("demo", "practice"):
-                    query += " AND account_type='PRACTICE'"
-                query += " ORDER BY created_at ASC"
-                rows = connection.execute(query, params).fetchall()
+            raw_time = close_time or position.get("open_time")
+            try:
+                timestamp = float(raw_time)
+                if timestamp >= 1e12:
+                    timestamp /= 1000
+                timestamp = int(timestamp)
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+            date_str = time.strftime("%Y-%m-%d", time.localtime(timestamp))
+            if not s_date <= date_str <= e_date:
+                continue
+            try:
+                profit = float(position.get("profit"))
+                stake = float(position.get("amount") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            asset = position.get("asset") or position.get("asset_id") or "Ativo desconhecido"
+            outcome = "WIN" if profit > 0 else "LOSS"
+            rows.append((
+                date_str,
+                source_account_type or "PRACTICE",
+                str(asset),
+                str(position.get("direction") or ""),
+                str(position.get("timeframe") or "—"),
+                outcome,
+                profit,
+                stake,
+                timestamp,
+            ))
+        rows.sort(key=lambda row: row[8])
+        all_time_trades = len(rows)
+    else:
+        with _db_lock:
+            with _connection() as connection:
+                rows = []
+                if hashed_owner:
+                    query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
+                               FROM telegram_daily_operations
+                               WHERE (owner_id=? OR owner_id='global' OR owner_id='') AND date_str >= ? AND date_str <= ?"""
+                    params = [hashed_owner, s_date, e_date]
+                    if account_filter == "real":
+                        query += " AND account_type='REAL'"
+                    elif account_filter in ("demo", "practice"):
+                        query += " AND account_type='PRACTICE'"
+                    query += " ORDER BY created_at ASC"
+                    rows = connection.execute(query, params).fetchall()
+
+                if not rows:
+                    query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
+                               FROM telegram_daily_operations
+                               WHERE date_str >= ? AND date_str <= ?"""
+                    params = [s_date, e_date]
+                    if account_filter == "real":
+                        query += " AND account_type='REAL'"
+                    elif account_filter in ("demo", "practice"):
+                        query += " AND account_type='PRACTICE'"
+                    query += " ORDER BY created_at ASC"
+                    rows = connection.execute(query, params).fetchall()
+        all_time_trades = None
 
     total_greens = 0
     total_reds = 0
@@ -900,15 +944,16 @@ def get_dashboard_analytics(
     # Últimos primeiro
     recent_trades.reverse()
 
-    all_time_trades = total_ops
-    try:
-        with _db_lock:
-            with _connection() as connection:
-                cnt_row = connection.execute("SELECT COUNT(*) FROM telegram_daily_operations").fetchone()
-                if cnt_row:
-                    all_time_trades = cnt_row[0]
-    except Exception:
-        pass
+    if all_time_trades is None:
+        all_time_trades = total_ops
+        try:
+            with _db_lock:
+                with _connection() as connection:
+                    cnt_row = connection.execute("SELECT COUNT(*) FROM telegram_daily_operations").fetchone()
+                    if cnt_row:
+                        all_time_trades = cnt_row[0]
+        except Exception:
+            log.exception("Falha ao consultar o total histórico de operações do Dashboard.")
 
     return {
         "start_date": s_date,
@@ -923,8 +968,9 @@ def get_dashboard_analytics(
         "asset_performance": asset_performance,
         "recent_trades": recent_trades[:100],
         "all_time_trades": all_time_trades,
+        "data_source": "iq_option" if positions is not None else "scanner",
+        "source_account_type": source_account_type,
     }
-
 
 
 
