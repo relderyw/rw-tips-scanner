@@ -17,21 +17,34 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import random
+import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-import config
-import db
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, _BRIDGE_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(_BRIDGE_DIR, ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+try:
+    import config
+    import db
+except ImportError:
+    from bridge import config
+    from bridge import db
 
 # ---------------------------------------------------------------------------
-# SOMENTE LEITURA: importamos APENAS o cliente e o tipo de instrumento para
-# consulta de ativos. NÃO importamos nada de trade.
+# IQ Option API imports
 # ---------------------------------------------------------------------------
-from iqoptionapi.iqapi import IQOptionClient  # noqa: E402  (import depois de sys.path se precisar)
+from iqoptionapi.iqapi import IQOptionClient  # noqa: E402
 from iqoptionapi.models import InstrumentType, OptionsTradeParams, Direction, OptionType  # noqa: E402
 from iqoptionapi.instruments.options_assests import UNDERLYING_ASSESTS  # noqa: E402
 
@@ -85,7 +98,7 @@ def _iter_all_stream_keys(timeframes=None) -> List[StreamKey]:
 
 
 def _jitter(base: float, pct: float = BACKOFF_JITTER_PCT) -> float:
-    """Jitter simétrico ±pct sobre um valor base."""
+    """Jitter simétrico +/-pct sobre um valor base."""
     delta = base * pct
     return base + random.uniform(-delta, delta)
 
@@ -116,7 +129,7 @@ class Collector(threading.Thread):
         self._stream_keys = _iter_all_stream_keys(self.timeframes)
         self._startup_event = threading.Event()
         self._startup_error: Optional[str] = None
-        # Cliente da IQ Option — inicializado em _connect(), nunca aqui.
+        # Cliente da IQ Option - inicializado em _connect(), nunca aqui.
         self.client: Optional[IQOptionClient] = None
         self.connected: bool = False
 
@@ -136,8 +149,9 @@ class Collector(threading.Thread):
         self._watchdog_thread: Optional[threading.Thread] = None
         self._connection_lock = threading.RLock()
 
-        # Resolução de nomes de ativos (painel → IQ).
-        self.asset_resolved: Dict[str, str] = {a: config.ASSETS[a] for a in config.ASSET_IDS}
+        # Resolução de nomes de ativos (100% dinâmica a partir da IQ Option com fallback aos do painel).
+        self.monitored_assets: List[str] = list(config.ASSET_IDS)
+        self.asset_resolved: Dict[str, str] = {a: config.ASSETS.get(a, a) for a in config.ASSET_IDS}
         self.asset_is_open: Dict[str, bool] = {a: False for a in config.ASSET_IDS}
         self._resolver_lock = threading.Lock()
 
@@ -149,7 +163,7 @@ class Collector(threading.Thread):
         self._latest_candle_received_at = 0.0
         self._latest_candle_latency_ms = 0
         self.stream_status: Dict[StreamKey, str] = {k: "not_subscribed" for k in all_keys}
-        # status ∈ {"not_subscribed", "subscribing", "ok", "stale", "market_closed"}
+        # status in {"not_subscribed", "subscribing", "ok", "stale", "market_closed"}
         self.subscriptions_active: set = set()  # Set[StreamKey] com subscribe confirmado
         self.subscriptions_expected_count: int = len(all_keys)  # 36
 
@@ -193,22 +207,37 @@ class Collector(threading.Thread):
                     return False, f"Payout ({current_p}%) menor que o mínimo configurado ({min_payout}%)"
 
             dir_enum = Direction.CALL if direction.upper() == "CALL" else Direction.PUT
+            clean_asset = str(asset).replace("/", "").replace(" ", "").strip().upper()
 
-            # Prioridade direta: se o ativo já foi resolvido e está ativo, usa direto
-            resolved = self.asset_resolved.get(asset)
+            # Constrói lista ordenada de candidatos inteligentes
+            raw_candidates = []
+            resolved = self.asset_resolved.get(asset) or self.asset_resolved.get(clean_asset)
             if resolved:
-                prioritized = [resolved]
+                raw_candidates.append(resolved)
+
+            # Adiciona variações normais e OTC
+            variants = [
+                clean_asset,
+                f"{clean_asset}-op",
+                f"{clean_asset}-OTC",
+                f"{clean_asset}-OTC-op",
+            ]
+            for v in variants:
+                if v not in raw_candidates:
+                    raw_candidates.append(v)
+
+            # Prioriza candidatos que têm payout positivo reportado
+            if self.payouts:
+                paying = [c for c in raw_candidates if self.payouts.get(c, 0) > 0]
+                non_paying = [c for c in raw_candidates if c not in paying]
+                prioritized = paying + non_paying
             else:
-                candidates = [asset, f"{asset}-OTC"]
-                if self.payouts:
-                    paying = [c for c in candidates if self.payouts.get(c, 0) > 0]
-                    prioritized = paying if paying else candidates
-                else:
-                    prioritized = candidates
+                prioritized = raw_candidates
 
             last_error = None
-            for cand in prioritized[:2]:
-                # Tenta binária primeiro
+            # Testa candidatos disponíveis (até 4 tentativas inteligentes)
+            for cand in prioritized[:4]:
+                # 1. Tenta binária
                 try:
                     params = OptionsTradeParams(
                         asset=cand,
@@ -225,27 +254,29 @@ class Collector(threading.Thread):
                 except Exception as e_bin:
                     last_error = str(e_bin)
 
-                # Tenta digital
-                try:
-                    params_dig = OptionsTradeParams(
-                        asset=cand,
-                        expiry=expiry,
-                        amount=amount,
-                        direction=dir_enum,
-                        option_type=OptionType.DIGITAL_OPTION,
-                    )
-                    res_dig = client.execute_options_trade(params_dig)
-                    if isinstance(res_dig, tuple) and res_dig[0]:
-                        log.info("⚡ Auto-trade digital executado: %s -> #%s", cand, res_dig[1])
-                        return True, str(res_dig[1])
-                    last_error = str(res_dig)
-                except Exception as e_dig:
-                    last_error = str(e_dig)
+                # 2. Tenta digital apenas se NÃO for OTC (IQ Option não oferece opções digitais em OTC)
+                if "-OTC" not in cand.upper():
+                    cand_dig = cand.replace("-op", "")
+                    try:
+                        params_dig = OptionsTradeParams(
+                            asset=cand_dig,
+                            expiry=expiry,
+                            amount=amount,
+                            direction=dir_enum,
+                            option_type=OptionType.DIGITAL_OPTION,
+                        )
+                        res_dig = client.execute_options_trade(params_dig)
+                        if isinstance(res_dig, tuple) and res_dig[0]:
+                            log.info("⚡ Auto-trade digital executado: %s -> #%s", cand_dig, res_dig[1])
+                            return True, str(res_dig[1])
+                        last_error = res_dig[1] if isinstance(res_dig, tuple) and len(res_dig) > 1 else str(res_dig)
+                    except Exception as e_dig:
+                        last_error = str(e_dig)
 
-            return False, last_error or "Nenhuma modalidade aceitou a ordem"
-        except Exception as e:
-            log.error("Erro ao executar trade na IQ Option: %s", e)
-            return False, str(e)
+            clean_err = last_error
+            if isinstance(clean_err, tuple) and len(clean_err) > 1:
+                clean_err = clean_err[1]
+            return False, clean_err or "Nenhuma modalidade aceitou a ordem"
         except Exception as e:
             log.error("Erro ao executar trade na IQ Option: %s", e)
             return False, str(e)
@@ -255,7 +286,7 @@ class Collector(threading.Thread):
     # ===================================================================
     def stop(self) -> None:
         """Solicita shutdown limpo. Bloqueia até threads internas terminarem."""
-        log.info("Solicitando shutdown limpo do coletor…")
+        log.info("Solicitando shutdown limpo do coletor...")
         self._halt.set()
         # Não encerra o socket no meio de um subscribe/backfill em andamento.
         with self._connection_lock:
@@ -274,7 +305,7 @@ class Collector(threading.Thread):
         self.password = ""
 
     def run(self) -> None:
-        """Loop principal do coletor: conecta → backfill → subscribe → respira."""
+        """Loop principal do coletor: conecta -> backfill -> subscribe -> respira."""
         # Inicia threads internas ANTES de qualquer conexão (já começam em modo wait
         # enquanto connected=False).
         self._writer_thread = threading.Thread(
@@ -300,7 +331,7 @@ class Collector(threading.Thread):
                     self._startup_event.set()
                 self.connected = False
                 sleep_for = _jitter(self._global_backoff)
-                log.error("Erro no ciclo do coletor: %s — backoff %s s", e, f"{sleep_for:.1f}")
+                log.error("Erro no ciclo do coletor: %s - backoff %s s", e, f"{sleep_for:.1f}")
                 self._halt.wait(sleep_for)
                 self._global_backoff = min(self._global_backoff * BACKOFF_MULTIPLIER, BACKOFF_MAX)
 
@@ -308,9 +339,9 @@ class Collector(threading.Thread):
     # Conexão / reconexão global
     # ===================================================================
     def _connect_cycle(self) -> None:
-        """Executa 1 ciclo: conectar → resolver ativos → subscribe → backfill."""
+        """Executa 1 ciclo: conectar -> resolver ativos -> subscribe -> backfill."""
         with self._connection_lock:
-            log.info("Iniciando ciclo de conexão com conta %s…", self.account_type.upper())
+            log.info("Iniciando ciclo de conexão com conta %s...", self.account_type.upper())
             self._disconnect_client()
             self._connect_client()
             self._resolve_asset_names()
@@ -531,14 +562,9 @@ class Collector(threading.Thread):
         return rows
 
     def _resolve_asset_names(self) -> None:
-        """Decide qual nome da IQ Option usar para cada ativo do painel.
-
-        Estratégia: chamada get_actives(InstrumentType.BINARY_OPTION). Ela devolve
-        um dict {active_id_int: {ticker, is_open, profit_percent}}. Construímos
-        um mapa reverso ticker→{is_open, profit_percent} e, para cada ativo do
-        painel, iteramos ASSET_IQ_NAMES candidatos e pegamos o primeiro que
-        1) existe em UNDERLYING_ASSESTS E 2) is_open=True. Se nenhum aberto,
-        escolhemos o primeiro candidato existente (status ficará market_closed).
+        """Decide de forma 100% DINAMICA os ativos abertos na IQ Option.
+        Seleciona automaticamente os pares abertos com maior payout (forex, cripto, otc, indices),
+        mantendo fallback e compatibilidade com os ativos baseline.
         """
         if self.client is None:
             raise RuntimeError("resolve_asset_names sem cliente conectado")
@@ -549,65 +575,151 @@ class Collector(threading.Thread):
             except Exception as e:  # noqa: BLE001
                 log.warning("get_actives() falhou, usando candidatos padrão: %s", e)
                 actives_open_info = {}
-            # Mapa ticker (ex.: 'EURUSD-op') → {is_open, profit_percent}
+
+            # Mapa ticker (ex.: 'EURUSD-op') -> {is_open, profit_percent}
             ticker_info: Dict[str, Dict] = {}
-            for _active_id, info in actives_open_info.items():
+            for _act_id, info in actives_open_info.items():
                 t = (info.get("ticker") or "").strip()
                 if t:
                     ticker_info[t] = info
+                    norm = re.sub(r"[^A-Z0-9]", "", t.upper())
+                    if norm:
+                        ticker_info[norm] = info
 
-            resolved_any_changed = False
+            # 1. Descoberta dinâmica de TODOS os pares abertos na corretora suportados pela biblioteca
+            dynamic_open_pairs: Dict[str, dict] = {}
+            for act_id_int, act_data in actives_open_info.items():
+                if not act_data.get("is_open"):
+                    continue
+                t_raw = (act_data.get("ticker") or "").strip()
+                payout_val = int(act_data.get("profit_percent") or 0)
+                if payout_val <= 0 or not t_raw:
+                    continue
+
+                # Localiza candidato correspondente em UNDERLYING_ASSESTS
+                supported_cand = None
+                clean_sym = re.sub(r"[^A-Z0-9]", "", t_raw.replace("-op", "").replace("-OTC", "").replace("(OTC)", "")).upper()
+                for test_cand in [t_raw, f"{clean_sym}-op", f"{clean_sym}-OTC-op", f"{clean_sym}-OTC", clean_sym]:
+                    if test_cand in UNDERLYING_ASSESTS:
+                        supported_cand = test_cand
+                        break
+                if not supported_cand:
+                    continue
+
+                is_otc = ("-OTC" in t_raw or "(OTC)" in t_raw or "-OTC" in supported_cand)
+                asset_key = f"{clean_sym}-OTC" if is_otc else clean_sym
+
+                if asset_key not in dynamic_open_pairs or payout_val > dynamic_open_pairs[asset_key]["payout"]:
+                    dynamic_open_pairs[asset_key] = {
+                        "asset_id": asset_key,
+                        "ticker": supported_cand,
+                        "active_id": int(act_id_int),
+                        "payout": payout_val,
+                    }
+
+            # Ordena por maior payout descendente e seleciona o top do mercado aberto (até 25 pares)
+            sorted_open = sorted(dynamic_open_pairs.values(), key=lambda x: x["payout"], reverse=True)
+            top_selected = {x["asset_id"]: x for x in sorted_open[:25]}
+
+            # 2. Assegura também resolução dos pares baseline de config.ASSET_IDS
             for asset_id in config.ASSET_IDS:
                 candidates = config.ASSET_IQ_NAMES.get(asset_id, [])
                 chosen = None
                 chosen_open = False
+                chosen_pay = 0
                 for cand in candidates:
                     if cand not in UNDERLYING_ASSESTS:
                         continue
-                    info = ticker_info.get(cand, {})
-                    is_open = bool(info.get("is_open", False))
+                    act_id = UNDERLYING_ASSESTS.get(cand)
+                    info = actives_open_info.get(act_id) if act_id is not None else None
+                    if not info:
+                        info = ticker_info.get(cand)
+                    if not info:
+                        cand_norm = re.sub(r"[^A-Z0-9]", "", cand.upper())
+                        info = ticker_info.get(cand_norm)
+
+                    is_open = bool(info.get("is_open", False)) if info else False
+                    pay = int(info.get("profit_percent", 0)) if info else 0
                     if chosen is None:
-                        # Primeiro existente é o fallback padrão.
                         chosen = cand
                         chosen_open = is_open
+                        chosen_pay = pay
                     if is_open:
-                        # Encontramos um aberto; é preferência máxima.
                         chosen = cand
                         chosen_open = True
+                        chosen_pay = pay
                         break
+
                 if chosen is None:
-                    # Nenhum candidato existe em UNDERLYING_ASSESTS: usamos o
-                    # primeiro candidato mesmo assim (subscribe vai falhar e
-                    # o watchdog marca como not_subscribed; não crashamos).
                     chosen = candidates[0] if candidates else asset_id
                     chosen_open = False
-                    log.error(
-                        "Ativo %s: NENHUM candidato em ASSET_IQ_NAMES existe em "
-                        "UNDERLYING_ASSESTS; tentaremos '%s' mesmo assim.",
-                        asset_id, chosen,
-                    )
-                if self.asset_resolved.get(asset_id) != chosen:
-                    resolved_any_changed = True
-                self.asset_resolved[asset_id] = chosen
-                self.asset_is_open[asset_id] = chosen_open
+                    chosen_pay = 0
 
-            # Atualiza status market_closed/ok por stream agora que temos is_open.
+                if chosen_open:
+                    top_selected[asset_id] = {
+                        "asset_id": asset_id,
+                        "ticker": chosen,
+                        "active_id": UNDERLYING_ASSESTS.get(chosen, 0),
+                        "payout": chosen_pay,
+                    }
+                else:
+                    self.asset_resolved[asset_id] = chosen
+                    self.asset_is_open[asset_id] = False
+
+            # Atualiza lista de ativos monitorados ativos
+            self.monitored_assets = list(top_selected.keys()) if top_selected else list(config.ASSET_IDS)
+            for aid, item in top_selected.items():
+                self.asset_resolved[aid] = item["ticker"]
+                self.asset_is_open[aid] = True
+                if item["payout"] > 0:
+                    self.payouts[aid] = item["payout"]
+                    self.payouts[item["ticker"]] = item["payout"]
+
+            # Registra dinamicamente novos StreamKeys necessários
+            new_keys_to_sub = []
+            for a in self.monitored_assets:
+                for s in self.timeframes.values():
+                    sk = StreamKey(asset_id=a, tf_sec=s)
+                    if sk not in self.stream_status:
+                        self._stream_keys.append(sk)
+                        self.stream_last_seen[sk] = 0.0
+                        self.stream_last_candle_ts[sk] = 0
+                        self.stream_latency_ms[sk] = 0
+                        self.stream_status[sk] = "not_subscribed"
+                        new_keys_to_sub.append(sk)
+
+            self.subscriptions_expected_count = len(self._stream_keys)
+
+            # Atualiza status market_closed/ok por stream
             for sk in self.stream_status:
-                if not self.asset_is_open[sk.asset_id]:
+                if not self.asset_is_open.get(sk.asset_id, False):
                     self.stream_status[sk] = "market_closed"
 
-            if resolved_any_changed:
-                log.info("Resolução de ativos atualizada: %s",
-                         {a: (self.asset_resolved[a], "aberto" if self.asset_is_open[a] else "fechado")
-                          for a in config.ASSET_IDS})
-            else:
-                log.info("Resolução de ativos: sem mudanças em relação ao ciclo anterior.")
+            # Se já estiver conectado, subscreve os novos canais dinâmicos abertos
+            if self.connected and self.client is not None and new_keys_to_sub:
+                log.info("Subscrevendo %d novos streams de ativos dinâmicos com alto payout...", len(new_keys_to_sub))
+                for sk in new_keys_to_sub:
+                    if self._halt.is_set():
+                        break
+                    iq_name = self.asset_resolved.get(sk.asset_id)
+                    if iq_name:
+                        try:
+                            if self.client.start_candle_stream(iq_name, sk.tf_sec, timeout=6):
+                                self.subscriptions_active.add(sk)
+                                self.stream_status[sk] = "ok"
+                                self.stream_last_seen[sk] = time.time()
+                        except Exception as e_sub:
+                            log.debug("start_candle_stream dinâmico falhou para %s: %s", iq_name, e_sub)
+
+            log.info("🔥 Resolução 100%% DINÂMICA ativa: %d pares monitorados com maior payout. Top: %s",
+                     len(self.monitored_assets),
+                     [(a, f"{self.payouts.get(a, 0)}%") for a in self.monitored_assets[:8]])
 
     # ===================================================================
     # Subscribe de todos os streams (36)
     # ===================================================================
     def _subscribe_all(self) -> Tuple[int, int, int]:
-        """Tenta subscrever todas (12×3) combinações.
+        """Tenta subscrever todas as combinacoes de ativos e timeframes.
 
         Retorna (contagem_ok, contagem_market_closed, contagem_falhou).
         """
@@ -683,7 +795,7 @@ class Collector(threading.Thread):
         return ok
 
     # ===================================================================
-    # Callback: vela fechada (roda NA THREAD DO WEBSOCKET → NÃO FAZER I/O AQUI)
+    # Callback: vela fechada (roda NA THREAD DO WEBSOCKET -> NÃO FAZER I/O AQUI)
     # ===================================================================
     def _on_new_closed_candle_callback(self, candle_obj, _history=None) -> None:
         """Invocado pela biblioteca IQOption CADA VEZ QUE UMA VELA FECHA.
@@ -697,16 +809,16 @@ class Collector(threading.Thread):
         try:
             # Recebimento exato para latency.
             received_at = time.time()
-            # Map IQ asset_name (ex.: 'EURUSD-op') → asset_id do painel (ex.: 'EURUSD').
+            # Map IQ asset_name (ex.: 'EURUSD-op') -> asset_id do painel (ex.: 'EURUSD').
             # Usamos asset_resolved + UNDERLYING_ASSESTS para lookup robusto.
             iq_name = getattr(candle_obj, "asset_name", "") or ""
             asset_id = self._iq_name_to_panel_id(iq_name)
             if asset_id is None:
-                log.debug("Candle de ativo desconhecido (IQ: %s) — ignorado.", iq_name)
+                log.debug("Candle de ativo desconhecido (IQ: %s) - ignorado.", iq_name)
                 return
             tf_sec = int(getattr(candle_obj, "timeframe", 0) or 0)
             if tf_sec not in self.timeframes.values():
-                log.debug("Candle timeframe %ds não monitorado — ignorado.", tf_sec)
+                log.debug("Candle timeframe %ds não monitorado - ignorado.", tf_sec)
                 return
             tf_id = config.TIMEFRAMES_SEC_TO_ID[tf_sec]
             ts = int(getattr(candle_obj, "timestamp", 0) or 0)
@@ -732,7 +844,7 @@ class Collector(threading.Thread):
             log.error("Callback on_new_candle exception (ignorada, WS continua): %s", e)
 
     def _iq_name_to_panel_id(self, iq_name: str) -> Optional[str]:
-        """Lookup reverso: nome IQ (ex.: 'EURUSD-op', 'GER30-OTC') → painel id."""
+        """Lookup reverso: nome IQ (ex.: 'EURUSD-op', 'GER30-OTC') -> painel id."""
         with self._resolver_lock:
             for pid, chosen in self.asset_resolved.items():
                 if chosen == iq_name:
@@ -750,14 +862,14 @@ class Collector(threading.Thread):
         return None
 
     # ===================================================================
-    # Thread de escrita (1 escritor — garante thread-safety do SQLite)
+    # Thread de escrita (1 escritor - garante thread-safety do SQLite)
     # ===================================================================
     def _writer_thread_loop(self) -> None:
         """Drena write_queue.
 
         Itens esperados:
-          - dict com kind='candle_closed' → grava + atualiza métricas + publica broadcast.
-          - None (poison pill) → termina depois de drenar.
+          - dict com kind='candle_closed' -> grava + atualiza métricas + publica broadcast.
+          - None (poison pill) -> termina depois de drenar.
         """
         log.info("Thread de escrita iniciada.")
         while True:
@@ -838,7 +950,7 @@ class Collector(threading.Thread):
         if received_at >= self._latest_candle_received_at:
             self._latest_candle_received_at = received_at
             self._latest_candle_latency_ms = latency_ms
-        # Mercado estava fechado e agora temos candle → promove para ok.
+        # Mercado estava fechado e agora temos candle -> promove para ok.
         if self.stream_status.get(sk) == "market_closed":
             self.stream_status[sk] = "ok"
             self.asset_is_open[asset_id] = True
@@ -855,10 +967,10 @@ class Collector(threading.Thread):
             "latency_ms": latency_ms,
         })
 
-        # 4) log leve (não para cada stream de 36 — só loga se latência alta)
+        # 4) log leve (não para cada stream de 36 - só loga se latência alta)
         if latency_ms > 2000:
             log.warning(
-                "Vela %s/%s time=%s chegou com %dms (> 2s) — latência alta.",
+                "Vela %s/%s time=%s chegou com %dms (> 2s) - latência alta.",
                 asset_id, tf_id, candle["time"], latency_ms,
             )
         else:
@@ -939,7 +1051,7 @@ class Collector(threading.Thread):
             self.connected = False
             return
 
-        # Se chegou aqui: só 1-4 streams stale → reassina individualmente.
+        # Se chegou aqui: só 1-4 streams stale -> reassina individualmente.
         for sk in self._stream_keys:
             if self.stream_status[sk] == "stale":
                 log.info("Reassinando stream %s/%s individualmente.", sk.asset_id, sk.tf_id)
@@ -1127,8 +1239,8 @@ class Collector(threading.Thread):
             if t:
                 ticker_to_active_id[t] = int(active_id_int)
         new_payouts: Dict[str, int] = {}
-        for pid in config.ASSET_IDS:
-            iq_name = self.asset_resolved[pid]
+        for pid in self.monitored_assets:
+            iq_name = self.asset_resolved.get(pid, pid)
             act_id_int = ticker_to_active_id.get(iq_name)
             payout = None
             if act_id_int is not None:
@@ -1141,7 +1253,7 @@ class Collector(threading.Thread):
                     log.debug("get_profit_percent(%s=%d) ex: %s", pid, act_id_int, e)
             info_for_open = data.get(act_id_int) if act_id_int is not None else None
             if info_for_open:
-                self.asset_is_open[pid] = bool(info_for_open.get("is_open", self.asset_is_open[pid]))
+                self.asset_is_open[pid] = bool(info_for_open.get("is_open", self.asset_is_open.get(pid, False)))
             if payout is not None:
                 new_payouts[pid] = payout
                 if iq_name:
@@ -1196,7 +1308,7 @@ class Collector(threading.Thread):
             "latency_ms": self._latest_candle_latency_ms,
             "latency_by_stream": latency_ms,
             "last_candle": {
-                **{a: int(per_asset_last.get(a, 0)) for a in config.ASSET_IDS},
+                **{a: int(per_asset_last.get(a, 0)) for a in self.monitored_assets},
                 "per_tf": per_tf_last,
             },
             "lag_seconds": lag_seconds,
@@ -1204,14 +1316,14 @@ class Collector(threading.Thread):
             "per_asset_tf": {
                 asset_id: {
                     tf_id: {
-                        "last_candle": per_tf_last[f"{asset_id}/{tf_id}"],
-                        "lag_seconds": lag_seconds[f"{asset_id}/{tf_id}"],
-                        "status": status[f"{asset_id}/{tf_id}"],
-                        "latency_ms": latency_ms[f"{asset_id}/{tf_id}"],
+                        "last_candle": per_tf_last.get(f"{asset_id}/{tf_id}", 0),
+                        "lag_seconds": lag_seconds.get(f"{asset_id}/{tf_id}", 0),
+                        "status": status.get(f"{asset_id}/{tf_id}", "not_subscribed"),
+                        "latency_ms": latency_ms.get(f"{asset_id}/{tf_id}", 0),
                     }
                     for tf_id in self.timeframes
                 }
-                for asset_id in config.ASSET_IDS
+                for asset_id in self.monitored_assets
             },
             "count_ok": sum(value == "ok" for value in status.values()),
             "count_stale": sum(value == "stale" for value in status.values()),

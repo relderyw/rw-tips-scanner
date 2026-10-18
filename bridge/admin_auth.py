@@ -37,30 +37,53 @@ def _initialize_firebase_admin():
             ) from exc
         credential = credentials.Certificate(service_account)
     else:
-        if not credentials_path:
-            configured_filename = os.getenv("FIREBASE_SERVICE_ACCOUNT_FILE")
-            if configured_filename and os.path.isfile(os.path.join(_REPO_DIR, configured_filename)):
-                credentials_path = os.path.join(_REPO_DIR, configured_filename)
-            else:
-                for fname in os.listdir(_REPO_DIR):
-                    if fname.startswith("rw-tips-firebase-adminsdk") and fname.endswith(".json"):
-                        candidate = os.path.join(_REPO_DIR, fname)
-                        if os.path.isfile(candidate):
-                            credentials_path = candidate
-                            break
-        if not credentials_path:
+        candidate_dirs = [_BRIDGE_DIR, _REPO_DIR, os.getcwd()]
+        found_path = None
+
+        # 1. Tenta caminhos explícitos via variáveis de ambiente
+        explicit_candidates = [
+            credentials_path,
+            os.getenv("FIREBASE_SERVICE_ACCOUNT_FILE"),
+            "rw-tips-firebase-adminsdk-fbsvc-83ccc19671.json",
+        ]
+        for exp in explicit_candidates:
+            if not exp:
+                continue
+            if os.path.isabs(exp) and os.path.isfile(exp):
+                found_path = exp
+                break
+            for d in candidate_dirs:
+                p = os.path.join(d, exp)
+                if os.path.isfile(p):
+                    found_path = p
+                    break
+            if found_path:
+                break
+
+        # 2. Se ainda não encontrou, busca por prefixo nos diretórios candidatos
+        if not found_path:
+            for d in candidate_dirs:
+                if not os.path.isdir(d):
+                    continue
+                try:
+                    for fname in os.listdir(d):
+                        if (fname.startswith("rw-tips-firebase-adminsdk") or "firebase-adminsdk" in fname) and fname.endswith(".json"):
+                            p = os.path.join(d, fname)
+                            if os.path.isfile(p):
+                                found_path = p
+                                break
+                except Exception:
+                    pass
+                if found_path:
+                    break
+
+        if not found_path or not os.path.isfile(found_path):
             raise HTTPException(
                 status_code=503,
                 detail="Configure as credenciais Firebase Admin SDK no servidor.",
             )
-        if not os.path.isabs(credentials_path):
-            credentials_path = os.path.join(_BRIDGE_DIR, credentials_path)
-        if not os.path.isfile(credentials_path):
-            raise HTTPException(
-                status_code=503,
-                detail="O arquivo de credenciais Firebase Admin SDK não foi encontrado no servidor.",
-            )
-        credential = credentials.Certificate(credentials_path)
+        log.info("Firebase Admin SDK inicializado com credenciais: %s", found_path)
+        credential = credentials.Certificate(found_path)
 
     project_id = os.getenv("FIREBASE_PROJECT_ID")
     options = {"projectId": project_id} if project_id else None

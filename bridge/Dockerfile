@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY iqoptionapi /app/iqoptionapi
 # Copia a ponte (FastAPI)
 COPY bridge /app/bridge
+# Copia credenciais Firebase se existirem na raiz ou na bridge
+COPY rw-tips-firebase-adminsdk*.json* /app/
+COPY rw-tips-firebase-adminsdk*.json* /app/bridge/
 WORKDIR /app/bridge
 # Porta default do compose
 EXPOSE 8000

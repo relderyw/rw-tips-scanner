@@ -7,9 +7,11 @@ import { startCatalogRefresh } from '../lib/strategyValidation.js';
 import { disconnectIQAccount } from '../services/bridgeApi.js';
 import { liveFeed } from '../services/liveFeed.js';
 import { DataBadge } from './ui.jsx';
+import { ErrorBoundary } from './ErrorBoundary.jsx';
 
 const NAV = [
   { to: '/', label: 'Mesa Operacional', icon: Zap, badge: '4 ETAPAS', end: true },
+  { to: '/dashboard-geral', label: 'Dashboard Geral', icon: LayoutDashboard },
   { to: '/radar', label: 'Radar Live', icon: Radio },
   { to: '/entradas', label: 'Entradas', icon: History },
   { to: '/estrategias', label: 'Estratégias', icon: BookOpen },
@@ -109,7 +111,11 @@ export default function Layout() {
       </header>
 
       <main className="px-4 pb-20 pt-6 lg:ml-60 lg:px-8 lg:pt-8">
-        <div className="mx-auto max-w-7xl"><Outlet /></div>
+        <div className="mx-auto max-w-7xl">
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
+        </div>
       </main>
 
       {/* Aviso fixo */}

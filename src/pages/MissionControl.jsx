@@ -260,9 +260,11 @@ export default function MissionControl() {
   const [blacklistInput, setBlacklistInput] = useState('');
   const [dailyStats, setDailyStats]     = useState(null);
   const [sendingDailySummary, setSendingDailySummary] = useState(false);
+  const [summaryChoiceOpen, setSummaryChoiceOpen] = useState(false);
 
   const refreshTimer    = useRef(null);
   const signalTimer     = useRef(null);
+  const strategiesTimer = useRef(null);
   const dailyStatsTimer = useRef(null);
   const minPayoutRef    = useRef(minPayout);
   useEffect(() => { minPayoutRef.current = minPayout; }, [minPayout]);
@@ -333,8 +335,9 @@ export default function MissionControl() {
   };
 
   // Disparo manual do relatório diário de Greens/Reds para o Telegram
-  const handleSendDailySummary = async () => {
+  const handleSendDailySummary = async (accountType = 'both') => {
     setSendingDailySummary(true);
+    setSummaryChoiceOpen(false);
     setGlobalError('');
     try {
       if (isSimulated && !getIQSessionToken()) {
@@ -343,9 +346,10 @@ export default function MissionControl() {
         setTimeout(() => setNotice(''), 4000);
         return;
       }
-      const res = await sendTelegramDailySummary();
+      const res = await sendTelegramDailySummary(accountType);
       if (res?.stats) setDailyStats(res.stats);
-      setNotice('✅ Relatório diário de Greens e Reds enviado com sucesso ao seu Telegram!');
+      const label = accountType === 'real' ? 'Conta Real' : (accountType === 'demo' ? 'Conta Demo' : 'Real & Demo (Consolidado)');
+      setNotice(`✅ Relatório diário (${label}) enviado com sucesso ao seu Telegram!`);
       setTimeout(() => setNotice(''), 5000);
     } catch (e) {
       setGlobalError(`Falha no envio do relatório ao Telegram: ${e.message}`);
@@ -353,6 +357,15 @@ export default function MissionControl() {
       setSendingDailySummary(false);
     }
   };
+
+  // Carrega estatísticas diárias da sessão
+  const loadDailyStats = useCallback(async () => {
+    if (!getIQSessionToken()) return;
+    try {
+      const stats = await fetchDailyAssetStats('both');
+      if (stats) setDailyStats(stats);
+    } catch (_) {}
+  }, []);
 
   // STEP 1: carrega ativos top por payout
   const loadTopAssets = useCallback(async (threshold = minPayoutRef.current, force = false) => {
@@ -554,15 +567,17 @@ export default function MissionControl() {
       await loadTopAssets(threshold);
       await runBacktest();
       await loadSignals();
+      await loadDailyStats();
     } catch (_) {}
 
     signalTimer.current     = setInterval(loadSignals, 3000);
     strategiesTimer.current = setInterval(() => { refreshStrategies(true); }, 20000);
+    dailyStatsTimer.current = setInterval(loadDailyStats, 20000);
     refreshTimer.current    = setInterval(() => {
       loadTopAssets(minPayoutRef.current, false);
     }, 30000);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadTopAssets, runBacktest, loadSignals, refreshStrategies]);
+  }, [loadTopAssets, runBacktest, loadSignals, refreshStrategies, loadDailyStats]);
 
   // Alternar Auto-Trade sincronizando direto com o backend
   const handleToggleAutoTrade = async () => {
@@ -612,8 +627,10 @@ export default function MissionControl() {
           liveFeed.connect();
           loadSignals();
           refreshStrategies(true);
+          loadDailyStats();
           signalTimer.current     = setInterval(loadSignals, 3000);
           strategiesTimer.current = setInterval(() => { refreshStrategies(true); }, 20000);
+          dailyStatsTimer.current = setInterval(loadDailyStats, 20000);
           refreshTimer.current    = setInterval(() => {
             loadTopAssets(minPayoutRef.current, false);
           }, 30000);
@@ -625,9 +642,10 @@ export default function MissionControl() {
     })();
     return () => {
       alive = false;
-      clearInterval(signalTimer.current);
-      clearInterval(strategiesTimer.current);
-      clearInterval(refreshTimer.current);
+      if (signalTimer.current) clearInterval(signalTimer.current);
+      if (strategiesTimer.current) clearInterval(strategiesTimer.current);
+      if (dailyStatsTimer.current) clearInterval(dailyStatsTimer.current);
+      if (refreshTimer.current) clearInterval(refreshTimer.current);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1050,12 +1068,46 @@ export default function MissionControl() {
             {testingTelegram ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
             Testar Telegram
           </button>
-          <button type="button" onClick={handleSendDailySummary} disabled={sendingDailySummary}
-            className="btn-ghost text-xs px-3 py-1.5 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
-            title="Enviar Relatório Diário de Greens & Reds ao Telegram">
-            {sendingDailySummary ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BarChart2 className="h-3.5 w-3.5" />}
-            Resumo Greens/Reds
-          </button>
+          <div className="relative inline-block">
+            <button type="button" onClick={() => setSummaryChoiceOpen(v => !v)} disabled={sendingDailySummary}
+              className="btn-ghost text-xs px-3 py-1.5 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 flex items-center gap-1.5"
+              title="Enviar Relatório Diário de Greens & Reds ao Telegram">
+              {sendingDailySummary ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BarChart2 className="h-3.5 w-3.5" />}
+              Resumo Greens/Reds
+              <ChevronDown className={`h-3 w-3 transition-transform ${summaryChoiceOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {summaryChoiceOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-56 rounded-xl bg-panel2 border border-emerald-500/30 shadow-2xl p-1.5 z-50 text-left">
+                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-400 border-b border-line mb-1">
+                  Resumo Telegram por Conta
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleSendDailySummary('both')}
+                  className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-semibold text-white hover:bg-emerald-500/15 hover:text-emerald-400 flex items-center justify-between transition"
+                >
+                  <span>🌐 Real & Demo (Ambos)</span>
+                  <span className="text-[10px] text-zinc-500 font-mono">Consolidado</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSendDailySummary('real')}
+                  className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-semibold text-white hover:bg-emerald-500/15 hover:text-emerald-400 flex items-center justify-between transition"
+                >
+                  <span>💎 Apenas Conta Real</span>
+                  <span className="text-[10px] text-emerald-400 font-mono">Real</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSendDailySummary('demo')}
+                  className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-semibold text-white hover:bg-emerald-500/15 hover:text-emerald-400 flex items-center justify-between transition"
+                >
+                  <span>🎮 Apenas Conta Demo</span>
+                  <span className="text-[10px] text-amber-400 font-mono">Practice</span>
+                </button>
+              </div>
+            )}
+          </div>
           <button type="button" onClick={() => setConfigOpen(v => !v)}
             className={`btn-ghost text-xs px-3 py-1.5 ${configOpen ? 'border-neon/50 text-neon' : ''}`}>
             <Settings2 className="h-3.5 w-3.5" />

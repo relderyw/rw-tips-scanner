@@ -91,11 +91,24 @@ export const addAssetToBlacklist = (asset) =>
 export const removeAssetFromBlacklist = (asset) =>
   request('/scanner/blacklist', { method: 'POST', body: { asset, action: 'remove' } });
 
-export const fetchDailyAssetStats = () =>
-  request('/scanner/daily-stats');
+export const fetchDailyAssetStats = (accountType = 'both', date = null) =>
+  request('/scanner/daily-stats', { params: { account_type: accountType, ...(date ? { date } : {}) } });
 
-export const sendTelegramDailySummary = () =>
-  request('/telegram/daily-summary', { method: 'POST' });
+export const sendTelegramDailySummary = (accountType = 'both') =>
+  request('/telegram/daily-summary', {
+    method: 'POST',
+    params: { account_type: accountType },
+    body: { account_type: accountType },
+  });
+
+export const fetchDashboardStats = ({ startDate, endDate, accountType = 'both' } = {}) =>
+  request('/scanner/dashboard-stats', {
+    params: {
+      account_type: accountType,
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
+    },
+  });
 
 export async function fetchIQSession() {
   return request('/session');

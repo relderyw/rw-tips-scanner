@@ -1,163 +1,681 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Wifi, WifiOff, Radio, ArrowRight, Link2, Sparkles, Send } from 'lucide-react';
-import { getAvailableAssets, getPayout } from '../data/candleData.js';
-import { IMPLEMENTED_STRATEGIES } from '../data/strategies.js';
-import { getCatalogSnapshot, refreshCatalog, subscribeCatalog } from '../lib/strategyValidation.js';
-import { useDataStatus } from '../services/dataStatus.js';
-import { fmtPct, fmtNum, fmtUnits, fmtDateTime } from '../lib/stats.js';
-import { PageHeader, StatCard, Loading, ConfidenceBadge, DataBadge, Badge, signClass } from '../components/ui.jsx';
+import {
+  LayoutDashboard,
+  TrendingUp,
+  TrendingDown,
+  Target,
+  DollarSign,
+  Calendar,
+  Send,
+  RefreshCw,
+  Ban,
+  CheckCircle2,
+  Clock,
+  ArrowUpRight,
+  ShieldAlert,
+  Zap,
+} from 'lucide-react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  Legend,
+} from 'recharts';
+import {
+  fetchDashboardStats,
+  sendTelegramDailySummary,
+  getIQSessionToken,
+  fetchScannerBlacklist,
+  addAssetToBlacklist,
+  removeAssetFromBlacklist,
+} from '../services/bridgeApi.js';
+import { PageHeader, DataBadge } from '../components/ui.jsx';
+
+// Helpers de formatação de data
+const getTodayStr = () => new Date().toISOString().slice(0, 10);
+const getPastDateStr = (daysAgo) => {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return d.toISOString().slice(0, 10);
+};
 
 export default function Dashboard() {
-  const ds = useDataStatus();
-  const activeAssets = getAvailableAssets();
-  const [rows, setRows] = useState(() => getCatalogSnapshot().rows);
-  const [loading, setLoading] = useState(rows.length === 0);
-  useEffect(() => {
-    const unsubscribe = subscribeCatalog(({ rows: updated }) => {
-      setRows(updated);
-      setLoading(false);
-    });
-    refreshCatalog().catch((error) => {
-      console.error('[Dashboard] falha ao carregar catálogo:', error);
-      setLoading(false);
-    });
-    return unsubscribe;
+  // Filtros
+  const [periodPreset, setPeriodPreset] = useState('today'); // 'today' | 'yesterday' | '7d' | '30d' | 'all' | 'custom'
+  const [startDate, setStartDate] = useState(getTodayStr());
+  const [endDate, setEndDate] = useState(getTodayStr());
+  const [accountFilter, setAccountFilter] = useState('both'); // 'both' | 'real' | 'demo'
+
+  // Dados
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(null);
+  const [blacklist, setBlacklist] = useState([]);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [sendingSummary, setSendingSummary] = useState(false);
+  const [summaryChoiceOpen, setSummaryChoiceOpen] = useState(false);
+
+  // Manipulação de presets de data
+  const handlePresetChange = (preset) => {
+    setPeriodPreset(preset);
+    const today = getTodayStr();
+    if (preset === 'today') {
+      setStartDate(today);
+      setEndDate(today);
+    } else if (preset === 'yesterday') {
+      const y = getPastDateStr(1);
+      setStartDate(y);
+      setEndDate(y);
+    } else if (preset === '7d') {
+      setStartDate(getPastDateStr(7));
+      setEndDate(today);
+    } else if (preset === '30d') {
+      setStartDate(getPastDateStr(30));
+      setEndDate(today);
+    } else if (preset === 'all') {
+      setStartDate('2024-01-01');
+      setEndDate(today);
+    }
+  };
+
+  // Carrega lista de blacklist
+  const loadBlacklist = useCallback(async () => {
+    if (!getIQSessionToken()) return;
+    try {
+      const res = await fetchScannerBlacklist();
+      if (res?.blacklist) setBlacklist(res.blacklist);
+    } catch (_) {}
   }, []);
 
-  const approved = rows.filter((row) => row.eligible);
-  const avgWin = approved.length ? approved.reduce((sum, row) => sum + row.stats.winRate, 0) / approved.length : 0;
-  const avgPayout = ds.activeAssetsAt && activeAssets.length
-    ? activeAssets.reduce((sum, asset) => sum + getPayout(asset.id), 0) / activeAssets.length
-    : null;
-  const ranking = approved.sort((a, b) => b.stats.expectancy - a.stats.expectancy).slice(0, 10);
+  // Carrega estatísticas com os filtros atuais
+  const loadStats = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      if (getIQSessionToken()) {
+        const res = await fetchDashboardStats({
+          startDate: periodPreset === 'all' ? '2024-01-01' : startDate,
+          endDate: endDate,
+          accountType: accountFilter,
+        });
+        setData(res);
+      } else {
+        // Dados demonstrativos elegantes quando desconectado
+        const synthTimeline = [
+          { date: '14/10', greens: 12, reds: 2, total: 14, winrate: 85.7, profit: 124.5 },
+          { date: '15/10', greens: 18, reds: 3, total: 21, winrate: 85.7, profit: 189.0 },
+          { date: '16/10', greens: 15, reds: 4, total: 19, winrate: 78.9, profit: 142.0 },
+          { date: '17/10', greens: 22, reds: 2, total: 24, winrate: 91.6, profit: 254.0 },
+          { date: '18/10', greens: 19, reds: 3, total: 22, winrate: 86.4, profit: 205.5 },
+        ];
+        setData({
+          start_date: startDate,
+          end_date: endDate,
+          account_filter: accountFilter,
+          total_trades: 100,
+          total_greens: 86,
+          total_reds: 14,
+          winrate: 86.0,
+          total_profit: 915.0,
+          timeline: synthTimeline,
+          asset_performance: [
+            { asset: 'EUR/USD', trades: 28, greens: 25, reds: 3, winrate: 89.3, profit: 275.0 },
+            { asset: 'GBP/USD', trades: 22, greens: 19, reds: 3, winrate: 86.4, profit: 210.0 },
+            { asset: 'BTC/USD', trades: 18, greens: 15, reds: 3, winrate: 83.3, profit: 165.0 },
+            { asset: 'USD/JPY', trades: 16, greens: 14, reds: 2, winrate: 87.5, profit: 152.0 },
+            { asset: 'EUR/JPY', trades: 16, greens: 13, reds: 3, winrate: 81.3, profit: 113.0 },
+          ],
+          recent_trades: [
+            { date: '2026-10-18', time: '09:25', account_type: 'REAL', asset: 'EUR/USD', direction: 'CALL', timeframe: 'M1', outcome: 'WIN', profit: 17.4, stake: 20 },
+            { date: '2026-10-18', time: '09:20', account_type: 'REAL', asset: 'BTC/USD', direction: 'PUT', timeframe: 'M1', outcome: 'WIN', profit: 18.0, stake: 20 },
+            { date: '2026-10-18', time: '09:15', account_type: 'PRACTICE', asset: 'GBP/USD', direction: 'CALL', timeframe: 'M5', outcome: 'LOSS', profit: -20.0, stake: 20 },
+            { date: '2026-10-18', time: '09:10', account_type: 'REAL', asset: 'USD/JPY', direction: 'CALL', timeframe: 'M1', outcome: 'WIN', profit: 17.0, stake: 20 },
+          ],
+        });
+      }
+    } catch (err) {
+      setError(`Erro ao carregar dados do dashboard: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [periodPreset, startDate, endDate, accountFilter]);
+
+  useEffect(() => {
+    loadStats();
+    loadBlacklist();
+  }, [loadStats, loadBlacklist]);
+
+  // Enviar resumo para o Telegram com escolha da modalidade
+  const handleSendTelegramSummary = async (type = 'both') => {
+    setSendingSummary(true);
+    setSummaryChoiceOpen(false);
+    setNotice('');
+    setError('');
+    try {
+      if (!getIQSessionToken()) {
+        await new Promise((r) => setTimeout(r, 600));
+        setNotice('✅ [Modo Demonstração] Relatório do dia enviado com sucesso ao seu Telegram!');
+        setTimeout(() => setNotice(''), 4000);
+        return;
+      }
+      await sendTelegramDailySummary(type);
+      const label = type === 'real' ? 'Conta Real' : type === 'demo' ? 'Conta Demo' : 'Real & Demo (Consolidado)';
+      setNotice(`✅ Relatório diário (${label}) enviado com sucesso ao seu canal do Telegram!`);
+      setTimeout(() => setNotice(''), 5000);
+    } catch (e) {
+      setError(`Falha ao entregar relatório ao Telegram: ${e.message}`);
+    } finally {
+      setSendingSummary(false);
+    }
+  };
+
+  // Alternar Blacklist
+  const handleToggleBlacklist = async (asset) => {
+    const clean = String(asset).replace('/', '').toUpperCase();
+    const isBlocked = blacklist.some((b) => b.replace('/', '').toUpperCase() === clean);
+    try {
+      if (isBlocked) {
+        const res = await removeAssetFromBlacklist(clean);
+        setBlacklist(res.blacklist || []);
+        setNotice(`Ativo ${asset} removido da Blacklist.`);
+      } else {
+        const res = await addAssetToBlacklist(clean);
+        setBlacklist(res.blacklist || []);
+        setNotice(`Ativo ${asset} adicionado à Blacklist.`);
+      }
+      setTimeout(() => setNotice(''), 3000);
+    } catch (e) {
+      setError(`Erro ao atualizar blacklist: ${e.message}`);
+    }
+  };
+
+  const isBlocked = (asset) => {
+    const clean = String(asset).replace('/', '').toUpperCase();
+    return blacklist.some((b) => b.replace('/', '').toUpperCase() === clean);
+  };
 
   return (
     <>
-      <PageHeader title="Dashboard" subtitle="Visão geral de estratégias catalogadas e saúde da conexão com a corretora.">
+      <PageHeader
+        title="Dashboard Geral & Assertividade"
+        subtitle="Métricas operacionais consolidadas, histórico de Greens/Reds, análise por ativo e filtro flexível de datas."
+      >
         <DataBadge />
       </PageHeader>
 
-      {/* Banner de Direcionamento Rápido / Fluxo Operacional */}
-      <div className="card mb-5 border-neon/30 bg-gradient-to-r from-panel via-panel2/80 to-neon/[0.06] p-5">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="flex h-2 w-2 rounded-full bg-neon animate-ping" />
-              <span className="text-xs font-bold uppercase tracking-wider text-neon">Central Operacional</span>
-            </div>
-            <h3 className="text-lg font-bold text-white">
-              Pronto para monitorar e enviar sinais em tempo real?
-            </h3>
-            <p className="text-xs text-zinc-300 max-w-2xl">
-              O <strong>Radar Live</strong> cataloga M1 (1h) e M5 (2h), valida a convergência de estratégias e despacha os sinais automaticamente para o seu canal do Telegram com placar de vitórias.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {ds.iqConnected ? (
-              <Link to="/radar" className="btn-primary">
-                <Radio className="h-4 w-4 text-ink animate-pulse" />
-                Abrir Radar Live
-                <ArrowRight className="h-4 w-4 ml-1" />
-              </Link>
-            ) : (
-              <Link to="/conexao-iq" className="btn-primary">
-                <Link2 className="h-4 w-4 text-ink" />
-                Conectar IQ Option
-                <ArrowRight className="h-4 w-4 ml-1" />
-              </Link>
-            )}
-            <Link to="/scanner" className="btn-ghost text-xs">
-              Filtrar Catálogo (Scanner)
-            </Link>
-          </div>
-        </div>
-      </div>
-
-      {/* Status da conexão com a IQ Option (vem do /health + mensagens health do WS) */}
-      <div className="card mb-4 flex flex-col gap-3 p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          {ds.bridgeOnline === null && <><WifiOff className="h-5 w-5 text-zinc-500" /><span className="text-sm text-zinc-400">Ponte não configurada. Usando dados simulados (defina <code>VITE_BRIDGE_URL</code> no <code>.env</code>).</span></>}
-          {ds.bridgeOnline === false && <><WifiOff className="h-5 w-5 text-loss" /><span className="text-sm text-loss">Ponte offline — exibindo dados simulados.</span></>}
-          {ds.bridgeOnline && (
-            <>
-              <Wifi className="h-5 w-5 text-neon" />
-              <span className="text-sm text-zinc-300">Ponte online · IQ Option:</span>
-              <Badge tone={ds.iqConnected ? 'neon' : 'loss'}>{ds.iqConnected ? 'conectada (real · somente consulta)' : 'desconectada'}</Badge>
-              <Badge tone={ds.subscriptionsExpected === 0 ? 'gray' : (ds.subscriptionsActive === ds.subscriptionsExpected ? 'neon' : 'warn')}>
-                streams {ds.subscriptionsActive}/{ds.subscriptionsExpected}
-              </Badge>
-              {ds.latencyMs != null && <span className="text-xs text-zinc-400">Latência: <span className={ds.latencyMs < 1500 ? 'text-neon' : 'text-warn'}>{Math.round(ds.latencyMs)} ms</span></span>}
-            </>
-          )}
-        </div>
-        {ds.bridgeOnline && (
-          <div className="flex flex-wrap items-center gap-3 border-t border-line/60 pt-3">
-            <Badge tone={(ds.counts?.ok || 0) > 0 ? 'neon' : 'gray'}>ok: {ds.counts?.ok || 0}</Badge>
-            <Badge tone={(ds.counts?.stale || 0) > 0 ? 'warn' : 'gray'}>stale: {ds.counts?.stale || 0}</Badge>
-            <Badge tone={(ds.counts?.market_closed || 0) > 0 ? 'loss' : 'gray'}>mercado fechado: {ds.counts?.market_closed || 0}</Badge>
-            {(ds.counts?.missing || 0) > 0 && <Badge tone="gray">faltando: {ds.counts?.missing}</Badge>}
-            <span className="ml-auto text-xs text-zinc-500">
-              Último candle EURUSD · M1: {ds.health?.last_candle?.EURUSD?.M1 ? fmtDateTime(ds.health.last_candle.EURUSD.M1) : (ds.health?.last_candle?.EURUSD ? fmtDateTime(ds.health.last_candle.EURUSD) : '—')}
-            </span>
-          </div>
-        )}
-        {ds.bridgeOnline && ds.staleList && ds.staleList.length > 0 && (
-          <div className="rounded-md border border-warn/30 bg-warn/[0.03] p-3 text-xs">
-            <div className="mb-1 font-semibold text-warn">Ativos com atraso no streaming (stale):</div>
-            <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2 md:grid-cols-3">
-              {ds.staleList.slice(0, 18).map((s, i) => (
-                <li key={i} className="flex items-center gap-2 text-zinc-300">
-                  <span className="font-mono text-white">{s.asset}</span>
-                  <span className="text-zinc-500">·</span>
-                  <span className="font-mono">{s.tf}</span>
-                  <span className="ml-auto text-warn">
-                    {typeof s.lagSeconds === 'number'
-                      ? (s.lagSeconds > 60 ? `${Math.floor(s.lagSeconds / 60)}m${s.lagSeconds % 60}s` : `${s.lagSeconds}s`)
-                      : '?'} atraso
-                  </span>
-                </li>
-              ))}
-              {ds.staleList.length > 18 && <li className="text-zinc-500">+ {ds.staleList.length - 18} mais…</li>}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard label="Estratégias implementadas" value={IMPLEMENTED_STRATEGIES.length} />
-        <StatCard label={ds.activeAssetsAt ? 'Ativos binários abertos' : 'Ativos de exemplo'} value={activeAssets.length} />
-        <StatCard label="Configurações aprovadas" value={loading ? '…' : fmtNum(approved.length)} />
-        <StatCard label="Win rate médio" value={loading ? '…' : fmtPct(avgWin)} />
-        <StatCard label="Payout médio da plataforma" value={avgPayout == null ? '—' : fmtPct(avgPayout, 0)} />
-        <StatCard label="Configurações analisadas" value={loading ? '…' : fmtNum(rows.length)} />
-      </div>
-
-      <h2 className="mb-3 mt-8 text-lg font-bold text-white">Melhores configurações aprovadas</h2>
-      {loading ? <Loading /> : ranking.length === 0 ? (
-        <div className="card p-6 text-sm text-zinc-500">Nenhuma configuração atingiu 10 operações e assertividade acima do break-even com dados reais.</div>
-      ) : (
-        <div className="card overflow-x-auto">
-          <table className="w-full">
-            <thead className="border-b border-line"><tr>
-              {['Estratégia', 'Ativo', 'Operações', 'Assertividade', 'Break-even', 'Expectância', 'Confiança'].map((h) => <th key={h} className="th">{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {ranking.map((r) => (
-                <tr key={r.key} className="border-b border-line/60 last:border-0 hover:bg-panel2">
-                  <td className="td font-bold"><Link className="text-white hover:text-neon" to={`/estrategias/${r.strategy.id}?asset=${encodeURIComponent(r.asset)}&tf=${r.tf}&validation=1`}>{r.strategy.name}</Link></td>
-                  <td className="td">{r.asset}</td>
-                  <td className="td">{r.stats.decided}</td>
-                  <td className={`td font-bold ${signClass(r.stats.edge)}`}>{fmtPct(r.stats.winRate)}</td>
-                  <td className="td text-zinc-500">{fmtPct(r.stats.breakEven)}</td>
-                  <td className={`td ${signClass(r.stats.expectancy)}`}>{fmtUnits(r.stats.expectancy, 3)}</td>
-                  <td className="td"><ConfidenceBadge confidence={r.stats.confidence} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Avisos & Erros */}
+      {notice && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs font-semibold text-emerald-400 shadow-glowSm">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>{notice}</span>
         </div>
       )}
+      {error && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-xs font-semibold text-red-400">
+          <ShieldAlert className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* BARRA DE FILTROS SUPERIOR */}
+      <div className="card mb-6 p-4 sm:p-5 border-line bg-panel">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          {/* Seletor de Período */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-zinc-400 mr-1">
+              <Calendar className="h-3.5 w-3.5 text-neon" />
+              Período:
+            </span>
+            {[
+              { id: 'today', label: 'Hoje' },
+              { id: 'yesterday', label: 'Ontem' },
+              { id: '7d', label: '7 Dias' },
+              { id: '30d', label: '30 Dias' },
+              { id: 'all', label: 'Todo o Histórico' },
+              { id: 'custom', label: 'Personalizado' },
+            ].map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handlePresetChange(item.id)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
+                  periodPreset === item.id
+                    ? 'bg-neon/15 text-neon border border-neon/40 shadow-glowSm'
+                    : 'bg-panel2 text-zinc-400 hover:text-white border border-line'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Filtro de Conta (Real / Demo / Ambos) */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-zinc-400 mr-1">
+              Conta:
+            </span>
+            {[
+              { id: 'both', label: '🌐 Todas (Ambos)' },
+              { id: 'real', label: '💎 Real' },
+              { id: 'demo', label: '🎮 Demo' },
+            ].map((acc) => (
+              <button
+                key={acc.id}
+                type="button"
+                onClick={() => setAccountFilter(acc.id)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
+                  accountFilter === acc.id
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-glowSm'
+                    : 'bg-panel2 text-zinc-400 hover:text-white border border-line'
+                }`}
+              >
+                {acc.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Inputs de Data Personalizada se selecionado */}
+        {periodPreset === 'custom' && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 pt-3 border-t border-line/60">
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-zinc-400">De:</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="input text-xs py-1.5 px-3 font-mono"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-zinc-400">Até:</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="input text-xs py-1.5 px-3 font-mono"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={loadStats}
+              className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5"
+            >
+              <RefreshCw className="h-3 w-3" />
+              Filtrar
+            </button>
+          </div>
+        )}
+
+        {/* Ações Rápidas: Atualizar & Enviar Resumo ao Telegram */}
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-line/60">
+          <div className="flex items-center gap-2 text-xs text-zinc-400">
+            <span>Intervalo ativo:</span>
+            <span className="font-mono text-white font-bold">
+              {startDate === endDate ? startDate : `${startDate} até ${endDate}`}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 relative">
+            <button
+              type="button"
+              onClick={loadStats}
+              disabled={loading}
+              className="btn-ghost text-xs px-3 py-1.5 flex items-center gap-1.5"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Atualizar Dados
+            </button>
+
+            {/* Botão com Dropdown para Envio de Resumo ao Telegram */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setSummaryChoiceOpen((v) => !v)}
+                disabled={sendingSummary}
+                className="btn-ghost text-xs px-3 py-1.5 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 flex items-center gap-1.5"
+              >
+                {sendingSummary ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                Enviar Resumo Telegram
+              </button>
+
+              {summaryChoiceOpen && (
+                <div className="absolute right-0 top-full mt-1 w-64 rounded-xl bg-panel border border-line shadow-2xl p-2 z-50 space-y-1">
+                  <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                    Escolha a conta para o resumo diário:
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSendTelegramSummary('real')}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-white hover:bg-panel2 flex items-center gap-2 transition"
+                  >
+                    <span>💎</span> Resumo: Conta Real
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSendTelegramSummary('demo')}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-white hover:bg-panel2 flex items-center gap-2 transition"
+                  >
+                    <span>🎮</span> Resumo: Conta Demo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSendTelegramSummary('both')}
+                    className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-neon hover:bg-neon/10 flex items-center gap-2 transition border-t border-line/50 pt-2"
+                  >
+                    <span>🌐</span> Resumo: Ambas (Consolidado)
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* CARDS DE MÉTRICAS PRINCIPAIS */}
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        <div className="card p-4 border-line bg-panel">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Total Operações</span>
+            <Target className="h-4 w-4 text-zinc-400" />
+          </div>
+          <div className="text-2xl font-black text-white font-mono">{data?.total_trades || 0}</div>
+          <span className="text-[10px] text-zinc-500">no período filtrado</span>
+        </div>
+
+        <div className="card p-4 border-emerald-500/30 bg-emerald-500/[0.04]">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">Vitórias (Greens)</span>
+            <TrendingUp className="h-4 w-4 text-emerald-400" />
+          </div>
+          <div className="text-2xl font-black text-emerald-400 font-mono">{data?.total_greens || 0}</div>
+          <span className="text-[10px] text-emerald-500/80">operações vencedoras</span>
+        </div>
+
+        <div className="card p-4 border-red-500/30 bg-red-500/[0.04]">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-red-400">Derrotas (Reds)</span>
+            <TrendingDown className="h-4 w-4 text-red-400" />
+          </div>
+          <div className="text-2xl font-black text-red-400 font-mono">{data?.total_reds || 0}</div>
+          <span className="text-[10px] text-red-500/80">operações com loss</span>
+        </div>
+
+        <div className="card p-4 border-neon/30 bg-neon/[0.04]">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-neon">Assertividade</span>
+            <Zap className="h-4 w-4 text-neon" />
+          </div>
+          <div className="text-2xl font-black text-neon font-mono">{data?.winrate || 0}%</div>
+          <span className="text-[10px] text-zinc-500">taxa de acerto global</span>
+        </div>
+
+        <div className="card p-4 border-line bg-panel col-span-2 sm:col-span-1">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Resultado Líquido</span>
+            <DollarSign className="h-4 w-4 text-zinc-400" />
+          </div>
+          <div
+            className={`text-2xl font-black font-mono ${
+              (data?.total_profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+            }`}
+          >
+            {(data?.total_profit || 0) >= 0 ? `+$${(data?.total_profit || 0).toFixed(2)}` : `-$${Math.abs(data?.total_profit || 0).toFixed(2)}`}
+          </div>
+          <span className="text-[10px] text-zinc-500">estimativa P&L</span>
+        </div>
+      </div>
+
+      {/* GRÁFICO INTERATIVO DE DESEMPENHO NO TEMPO */}
+      {data?.timeline && data.timeline.length > 0 && (
+        <div className="card mb-6 p-5 border-line bg-panel">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <LayoutDashboard className="h-4 w-4 text-neon" />
+                Evolução Operacional no Período (Greens vs Reds)
+              </h3>
+              <p className="text-xs text-zinc-400">Volume de vitórias e derrotas distribuídos ao longo do tempo.</p>
+            </div>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" /> Greens
+              </span>
+              <span className="flex items-center gap-1.5 text-red-400 font-semibold">
+                <span className="h-2 w-2 rounded-full bg-red-400" /> Reds
+              </span>
+            </div>
+          </div>
+
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data.timeline} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                <XAxis dataKey="date" stroke="#71717a" tick={{ fontSize: 11 }} />
+                <YAxis stroke="#71717a" tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', borderRadius: '0.75rem', fontSize: '12px' }}
+                />
+                <Bar dataKey="greens" fill="#10b981" radius={[4, 4, 0, 0]} name="Greens" />
+                <Bar dataKey="reds" fill="#ef4444" radius={[4, 4, 0, 0]} name="Reds" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ANÁLISE POR ATIVO & BLACKLIST */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        {/* Tabela de Ativos */}
+        <div className="card p-5 border-line bg-panel lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-white">Desempenho por Ativo no Período</h3>
+              <p className="text-xs text-zinc-400">Assertividade calculada para cada paridade operada.</p>
+            </div>
+            <span className="text-xs text-zinc-500 font-mono">{data?.asset_performance?.length || 0} ativos</span>
+          </div>
+
+          {(!data?.asset_performance || data.asset_performance.length === 0) ? (
+            <div className="py-8 text-center text-xs text-zinc-500">
+              Nenhuma operação registrada para os filtros selecionados.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-line text-zinc-400">
+                    <th className="pb-2 font-semibold">Ativo</th>
+                    <th className="pb-2 font-semibold">Trades</th>
+                    <th className="pb-2 font-semibold">Greens</th>
+                    <th className="pb-2 font-semibold">Reds</th>
+                    <th className="pb-2 font-semibold">Winrate</th>
+                    <th className="pb-2 font-semibold">P&L</th>
+                    <th className="pb-2 font-semibold text-right">Ação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line/40">
+                  {data.asset_performance.map((item) => {
+                    const blocked = isBlocked(item.asset);
+                    return (
+                      <tr key={item.asset} className="hover:bg-panel2/50 transition">
+                        <td className="py-2.5 font-bold text-white flex items-center gap-1.5">
+                          {item.asset}
+                          {blocked && (
+                            <span className="rounded bg-red-500/20 px-1 py-0.2 text-[9px] font-extrabold text-red-400">
+                              BLACKLIST
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 font-mono text-zinc-300">{item.trades}</td>
+                        <td className="py-2.5 font-mono text-emerald-400 font-bold">{item.greens}</td>
+                        <td className="py-2.5 font-mono text-red-400 font-bold">{item.reds}</td>
+                        <td className="py-2.5">
+                          <span
+                            className={`font-mono font-bold ${
+                              item.winrate >= 70 ? 'text-neon' : item.winrate >= 55 ? 'text-amber-300' : 'text-red-400'
+                            }`}
+                          >
+                            {item.winrate}%
+                          </span>
+                        </td>
+                        <td
+                          className={`py-2.5 font-mono font-bold ${
+                            item.profit >= 0 ? 'text-emerald-400' : 'text-red-400'
+                          }`}
+                        >
+                          {item.profit >= 0 ? `+$${item.profit.toFixed(2)}` : `-$${Math.abs(item.profit).toFixed(2)}`}
+                        </td>
+                        <td className="py-2.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBlacklist(item.asset)}
+                            className={`btn-ghost text-[10px] px-2 py-1 ${
+                              blocked
+                                ? 'border-red-500/40 text-red-400 hover:bg-red-500/10'
+                                : 'text-zinc-400 hover:text-white'
+                            }`}
+                            title={blocked ? 'Remover da Blacklist' : 'Bloquear ativo na Blacklist'}
+                          >
+                            <Ban className="h-3 w-3 mr-1 inline" />
+                            {blocked ? 'Desbloquear' : 'Bloquear'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Card Informativo & Ações Rápidas */}
+        <div className="space-y-4">
+          <div className="card p-5 border-line bg-panel space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-neon flex items-center gap-1.5">
+              <Zap className="h-3.5 w-3.5" />
+              Dicas de Gestão de Risco
+            </h4>
+            <p className="text-xs text-zinc-300 leading-relaxed">
+              Ativos com assertividade inferior a <strong>60%</strong> no período ou com sequência de losses podem ser
+              adicionados diretamente à <strong>Blacklist</strong>. O robô rejeitará sinais desses ativos até serem desbloqueados.
+            </p>
+            <div className="pt-2 border-t border-line/60">
+              <Link to="/" className="btn-primary w-full text-xs py-2 flex items-center justify-center gap-1.5">
+                Ir para Mesa Operacional
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          </div>
+
+          <div className="card p-5 border-line bg-panel space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white">Blacklist do Robô</span>
+              <span className="text-xs font-mono text-neon">{blacklist.length} bloqueados</span>
+            </div>
+            {blacklist.length === 0 ? (
+              <p className="text-xs text-zinc-500">Nenhum ativo bloqueado no momento.</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {blacklist.map((b) => (
+                  <span
+                    key={b}
+                    className="flex items-center gap-1 rounded bg-red-500/15 border border-red-500/30 px-2 py-0.5 text-xs font-bold text-red-300"
+                  >
+                    {b}
+                    <button
+                      type="button"
+                      onClick={() => handleToggleBlacklist(b)}
+                      className="hover:text-white"
+                      title="Remover da Blacklist"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* HISTÓRICO DE ENTRADAS RECENTES NO PERÍODO */}
+      <div className="card p-5 border-line bg-panel">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Clock className="h-4 w-4 text-neon" />
+              Histórico Detalhado das Entradas no Período
+            </h3>
+            <p className="text-xs text-zinc-400">Lista com registro de ordens executadas e monitoradas.</p>
+          </div>
+          <span className="text-xs font-mono text-zinc-500">
+            {data?.recent_trades?.length || 0} registradas
+          </span>
+        </div>
+
+        {(!data?.recent_trades || data.recent_trades.length === 0) ? (
+          <div className="py-8 text-center text-xs text-zinc-500">
+            Nenhuma entrada registrada para este filtro de data e conta.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {data.recent_trades.map((tr, idx) => {
+              const isWin = tr.outcome === 'WIN';
+              return (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between rounded-xl bg-panel2 border border-line px-3 py-2.5 text-xs hover:border-zinc-600 transition"
+                >
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`font-black px-2 py-0.5 rounded text-[11px] ${
+                        isWin ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                      }`}
+                    >
+                      {isWin ? 'GREEN' : 'RED'}
+                    </span>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white">{tr.asset}</span>
+                        <span className="text-zinc-500 font-mono text-[11px]">{tr.direction}</span>
+                        <span className="text-zinc-500 font-mono text-[10px]">[{tr.timeframe}]</span>
+                        <span
+                          className={`rounded px-1 py-0.2 text-[9px] font-bold ${
+                            tr.account_type === 'REAL' ? 'bg-cyan-500/20 text-cyan-300' : 'bg-amber-500/20 text-amber-300'
+                          }`}
+                        >
+                          {tr.account_type === 'REAL' ? 'REAL' : 'DEMO'}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-zinc-500">
+                        {tr.date} às {tr.time}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="text-right">
+                    <span
+                      className={`font-bold font-mono text-sm block ${
+                        isWin ? 'text-emerald-400' : 'text-red-400'
+                      }`}
+                    >
+                      {tr.profit >= 0 ? `+$${tr.profit.toFixed(2)}` : `-$${Math.abs(tr.profit).toFixed(2)}`}
+                    </span>
+                    <span className="text-[10px] text-zinc-500">Entrada: ${tr.stake.toFixed(2)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </>
   );
 }

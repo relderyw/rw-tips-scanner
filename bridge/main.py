@@ -541,33 +541,88 @@ def manage_scanner_blacklist(payload: BlacklistActionRequest, session: UserSessi
     return {"blacklist": items}
 
 
+class DailySummaryRequest(BaseModel):
+    account_type: str = Field(default="both")
+
+
 @app.get("/scanner/daily-stats")
-def get_daily_asset_stats(session: UserSession = Depends(require_iq_session)):
+def get_daily_asset_stats(
+    account_type: str = Query("both"),
+    date: Optional[str] = Query(None),
+    session: UserSession = Depends(require_iq_session),
+):
     """Retorna o placar diário de Greens e Reds por ativo e sequências de perdas."""
     scanner = _get_or_create_scanner(session)
-    if not scanner:
-        return {"top_greens": [], "top_reds": [], "total_greens": 0, "total_reds": 0, "asset_stats": {}, "blacklist": []}
-    return scanner.get_daily_asset_stats()
+    scanner_stats = scanner.get_daily_asset_stats() if scanner else {}
+    blacklist = scanner_stats.get("blacklist", []) if scanner_stats else []
+
+    stats = telegram_notifications.get_daily_report_stats(
+        owner_id=session.identity_hash,
+        date_str=date,
+        account_filter=account_type.lower(),
+    )
+    stats["blacklist"] = blacklist
+    if not stats.get("top_greens") and scanner_stats.get("top_greens"):
+        stats["top_greens"] = scanner_stats.get("top_greens")
+    if not stats.get("top_reds") and scanner_stats.get("top_reds"):
+        stats["top_reds"] = scanner_stats.get("top_reds")
+    if stats.get("total_greens") == 0 and stats.get("total_reds") == 0:
+        stats["total_greens"] = scanner_stats.get("total_greens", 0)
+        stats["total_reds"] = scanner_stats.get("total_reds", 0)
+        stats["winrate"] = scanner_stats.get("winrate", 0.0)
+
+    return stats
 
 
 @app.post("/telegram/daily-summary")
-def send_telegram_daily_summary(session: UserSession = Depends(require_iq_session)):
+def send_telegram_daily_summary(
+    payload: Optional[DailySummaryRequest] = None,
+    account_type: Optional[str] = Query(None),
+    session: UserSession = Depends(require_iq_session),
+):
     """Envia relatório formatado com os ativos que mais deram Green e Red ao Telegram."""
+    act_filter = (account_type or (payload.account_type if payload else "both") or "both").lower()
     scanner = _get_or_create_scanner(session)
-    if not scanner:
-        raise HTTPException(status_code=503, detail="Scanner indisponível.")
-    stats = scanner.get_daily_asset_stats()
+    scanner_stats = scanner.get_daily_asset_stats() if scanner else {}
+    blacklist = scanner_stats.get("blacklist", []) if scanner_stats else []
+
+    stats = telegram_notifications.get_daily_report_stats(
+        owner_id=session.identity_hash,
+        account_filter=act_filter,
+    )
+    top_greens = stats.get("top_greens") or scanner_stats.get("top_greens", [])
+    top_reds = stats.get("top_reds") or scanner_stats.get("top_reds", [])
+    total_greens = stats.get("total_greens", 0) or scanner_stats.get("total_greens", 0)
+    total_reds = stats.get("total_reds", 0) or scanner_stats.get("total_reds", 0)
+
     ok = telegram_notifications.send_daily_ranking(
         owner_id=session.identity_hash,
-        top_greens=stats.get("top_greens", []),
-        top_reds=stats.get("top_reds", []),
-        total_greens=stats.get("total_greens", 0),
-        total_reds=stats.get("total_reds", 0),
-        blacklisted_assets=stats.get("blacklist", []),
+        top_greens=top_greens,
+        top_reds=top_reds,
+        total_greens=total_greens,
+        total_reds=total_reds,
+        blacklisted_assets=blacklist,
+        account_filter=act_filter,
     )
     if not ok:
         raise HTTPException(status_code=502, detail="Falha ao entregar relatório ao Telegram (verifique token e chat_id).")
-    return {"sent": True, "stats": stats}
+    return {"sent": True, "stats": stats, "account_filter": act_filter}
+
+
+@app.get("/scanner/dashboard-stats")
+def get_scanner_dashboard_stats(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    account_type: str = Query("both"),
+    session: UserSession = Depends(require_iq_session),
+):
+    """Retorna dados analíticos completos para o Dashboard da plataforma com filtro de datas."""
+    return telegram_notifications.get_dashboard_analytics(
+        owner_id=session.identity_hash,
+        start_date=start_date,
+        end_date=end_date,
+        account_filter=account_type.lower(),
+    )
 
 
 @app.get("/scanner/best-strategies")
@@ -721,9 +776,25 @@ async def send_telegram_signal(
 
 
 @app.get("/telegram/stats")
-def telegram_session_stats(session: UserSession = Depends(require_iq_session)):
-    """Retorna os greens/reds acumulados da sessão do usuário."""
-    return telegram_notifications.get_session_stats(session.identity_hash)
+def telegram_session_stats(
+    account_type: str = Query("both"),
+    session: UserSession = Depends(require_iq_session),
+):
+    """Retorna os greens/reds do DIA ATUAL para a sessão do usuário (Demo, Real ou Ambos)."""
+    report = telegram_notifications.get_daily_report_stats(
+        owner_id=session.identity_hash,
+        account_filter=account_type.lower(),
+    )
+    return {
+        "greens": report.get("total_greens", 0),
+        "reds": report.get("total_reds", 0),
+        "real_greens": report.get("real_greens", 0),
+        "real_reds": report.get("real_reds", 0),
+        "demo_greens": report.get("demo_greens", 0),
+        "demo_reds": report.get("demo_reds", 0),
+        "winrate": report.get("winrate", 0.0),
+        "date": report.get("date_str"),
+    }
 
 
 @app.get("/telegram/status")

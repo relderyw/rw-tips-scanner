@@ -1,4 +1,5 @@
-"""signal_scanner.py — Motor de sinais integrado ao RW TIPS Bridge.
+# -*- coding: utf-8 -*-
+"""signal_scanner.py - Motor de sinais integrado ao RW TIPS Bridge.
 
 Integra-se ao Collector via hook em on_new_candle:
   - A cada vela fechada, busca o histórico do SQLite (db.query)
@@ -14,6 +15,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 import re
 import threading
@@ -22,9 +25,26 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-import config
-import db
-import telegram_notifications
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, _BRIDGE_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(_BRIDGE_DIR, ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+try:
+    from iqoptionapi.models import InstrumentType
+except ImportError:
+    InstrumentType = None
+
+try:
+    import config
+    import db
+    import telegram_notifications
+except ImportError:
+    from bridge import config
+    from bridge import db
+    from bridge import telegram_notifications
 
 log = logging.getLogger("signal_scanner")
 
@@ -47,14 +67,14 @@ def _save_persisted_config(cfg: dict) -> None:
     except Exception as e:
         log.warning("Falha ao gravar scanner_config.json: %s", e)
 
-# ─── Configuração ─────────────────────────────────────────────────────────────
+# --- Configuração -------------------------------------------------------------
 MIN_CONFIDENCE: int  = int(__import__("os").getenv("SCANNER_MIN_CONFIDENCE", "70"))
 MIN_CANDLES:    int  = 50       # mínimo de velas no histórico para analisar
 LOOKBACK_HOURS: int  = 48       # janela do histórico buscada no SQLite
 COOLDOWN_SECS:  int  = 300      # segundos sem repetir sinal para o mesmo ativo+tf
 MIN_PAYOUT:     int  = 70       # payout mínimo para enviar sinal (%)
 
-# ─── Pesos das estratégias (soma = 100) ───────────────────────────────────────
+# --- Pesos das estratégias (soma = 100) ---------------------------------------
 WEIGHTS: Dict[str, int] = {
     "EMA Cross":    20,
     "MACD":         20,
@@ -68,7 +88,7 @@ WEIGHTS: Dict[str, int] = {
 MAX_SCORE = sum(WEIGHTS.values())  # 100
 
 
-# ─── Indicadores técnicos ─────────────────────────────────────────────────────
+# --- Indicadores técnicos -----------------------------------------------------
 def _ema(values: List[float], period: int) -> Optional[float]:
     if len(values) < period:
         return None
@@ -165,19 +185,19 @@ def _three_consec(candles: List[dict], direction: str) -> bool:
     return all(c["close"] < c["open"] for c in last3)
 
 
-# ─── Modelo de sinal ──────────────────────────────────────────────────────────
+# --- Modelo de sinal ----------------------------------------------------------
 @dataclass
 class ScannerSignal:
     asset:      str
     direction:  str       # "CALL" ou "PUT"
-    confidence: int       # 0–99
+    confidence: int       # 0-99
     timeframe:  str       # "M1", "M5", "M15"
     strategies: List[str]
     candle_time: int      # timestamp unix da vela que disparou
     payout:     int = 0
 
 
-# ─── Motor de análise técnica por confluência ────────────────────────────────
+# --- Motor de análise técnica por confluência --------------------------------
 def analyse(asset: str, candles: List[dict], timeframe: str) -> Optional[ScannerSignal]:
     """Analisa velas e retorna ScannerSignal baseado em confluência técnica real (Setups)."""
     if len(candles) < MIN_CANDLES:
@@ -330,7 +350,7 @@ def analyse(asset: str, candles: List[dict], timeframe: str) -> Optional[Scanner
     return None
 
 
-# ─── Formatador de mensagem Telegram (MarkdownV2) ─────────────────────────────
+# --- Formatador de mensagem Telegram (MarkdownV2) -----------------------------
 def _escape(text: str) -> str:
     import re
     return re.sub(r"([_*\[\]()~`>#+=|{}.!\\\-])", r"\\\1", str(text))
@@ -346,7 +366,7 @@ def _build_telegram_message(
     arrow  = "📈" if sig.direction == "CALL" else "📉"
     tf_map = {"M1": "1 minuto (M1)", "M5": "5 minutos (M5)", "M15": "15 minutos (M15)", "1m": "1 minuto (M1)", "5m": "5 minutos (M5)"}
     tf_str = tf_map.get(sig.timeframe, sig.timeframe)
-    payout_str = f"{sig.payout}%" if sig.payout else "—"
+    payout_str = f"{sig.payout}%" if sig.payout else "-"
     strats = "\n  ✦ ".join(_escape(s) for s in sig.strategies)
     acct_label = "🔵 DEMO (PRACTICE)" if "PRACTICE" in account_type.upper() or "DEMO" in account_type.upper() else "🔴 CONTA REAL"
     trade_line = f"\n⚡ *Entrada automática:* `{_escape(order_info)}`" if order_info else ""
@@ -369,7 +389,7 @@ def _build_telegram_message(
     )
 
 
-# ─── Scanner por sessão ────────────────────────────────────────────────────────
+# --- Scanner por sessão --------------------------------------------------------
 class SessionScanner:
     """
     Instância por sessão de usuário.
@@ -390,7 +410,7 @@ class SessionScanner:
         self.payouts        = payouts   # referência ao dict vivo do Collector
         self.collector      = collector
         self._lock          = threading.Lock()
-        # Deduplication: chave = (asset_id, tf, direction) → ultimo timestamp enviado
+        # Deduplication: chave = (asset_id, tf, direction) -> ultimo timestamp enviado
         self._last_sent: Dict[Tuple[str, str, str], float] = {}
         # Sinais emitidos nesta sessão (para /scanner/signals)
         self.signals_history: List[dict] = []
@@ -484,10 +504,9 @@ class SessionScanner:
         # 3. Consulta direta no client da IQ Option se conectado
         if self.collector and getattr(self.collector, "client", None) and getattr(self.collector, "connected", False):
             try:
-                # pyrefly: ignore [missing-import]
-                from iqoptionapi.constants import InstrumentType
                 client = self.collector.client
-                actives = client.get_actives(InstrumentType.BINARY_OPTION) or {}
+                actives = client.get_actives(InstrumentType.BINARY_OPTION) if InstrumentType else {}
+                actives = actives or {}
                 for act_id_int, info in actives.items():
                     ticker = (info.get("ticker") or "").strip()
                     if ticker in candidates:
@@ -548,7 +567,7 @@ class SessionScanner:
 
         sig.payout = payout
 
-        # Cooldown — evita spam do mesmo sinal
+        # Cooldown - evita spam do mesmo sinal
         key = (asset_id, tf, sig.direction)
         now = time.time()
         with self._lock:
@@ -581,7 +600,7 @@ class SessionScanner:
             )
             return
 
-        # ── Prepara metadados ANTES de qualquer I/O de rede ────────────────
+        # -- Prepara metadados ANTES de qualquer I/O de rede ----------------
         tf_exp = 1 if sig.timeframe == "M1" else (5 if sig.timeframe == "M5" else 15)
         entry_time_str = time.strftime("%H:%M", time.localtime(sig.candle_time))
         signal_id = _make_signal_id(sig)
@@ -613,13 +632,13 @@ class SessionScanner:
             sig.timeframe, sig.confidence, sig.payout, account_type,
         )
 
-        # ── 🚀 PRIORIDADE MÁXIMA: Telegram IMEDIATO — antes do trade ────────
+        # -- 🚀 PRIORIDADE MÁXIMA: Telegram IMEDIATO - antes do trade --------
         # O sinal chega ao usuário no instante do fechamento da vela,
         # garantindo tempo para entrar manualmente no "nascimento" da próxima.
         msg_text = _build_telegram_message(
             sig, entry_time_str,
             account_type=account_type,
-            order_info="",   # sem info de ordem ainda — atualizado após o trade
+            order_info="",   # sem info de ordem ainda - atualizado após o trade
             display_name=display_name,
         )
 
@@ -670,7 +689,7 @@ class SessionScanner:
             if len(self.signals_history) > 200:
                 self.signals_history = self.signals_history[-200:]
 
-        # ── 🔄 Trade + Gale em thread separada (não bloqueia o Telegram) ────
+        # -- 🔄 Trade + Gale em thread separada (não bloqueia o Telegram) ----
         if self.auto_trade and self.collector:
             threading.Thread(
                 target=self._execute_trade_and_monitor,
@@ -834,6 +853,8 @@ class SessionScanner:
                 timeframe=sig.timeframe,
                 outcome="WIN_DIRECT",
                 profit=profit,
+                stake=initial_stake,
+                account_type=account_type,
             )
             self._update_signal_record(signal_id, "win_first", f"WIN (+${profit:.2f})")
             return
@@ -883,6 +904,8 @@ class SessionScanner:
                         timeframe=sig.timeframe,
                         outcome="WIN_GALE1",
                         profit=net_profit,
+                        stake=initial_stake + gale_stake,
+                        account_type=account_type,
                     )
                     self._update_signal_record(signal_id, "win_gale1", f"WIN G1 (+${net_profit:.2f})")
                     return
@@ -901,6 +924,8 @@ class SessionScanner:
                         timeframe=sig.timeframe,
                         outcome="LOSS_GALE1",
                         profit=-total_loss,
+                        stake=initial_stake + gale_stake,
+                        account_type=account_type,
                     )
                     self._update_signal_record(signal_id, "loss_gale1", f"LOSS G1 (-${total_loss:.2f})")
                     return
@@ -920,6 +945,8 @@ class SessionScanner:
             timeframe=sig.timeframe,
             outcome="LOSS_DIRECT",
             profit=-initial_stake,
+            stake=initial_stake,
+            account_type=account_type,
         )
         self._update_signal_record(signal_id, "loss", f"LOSS (-${initial_stake:.2f})")
 
@@ -1022,7 +1049,8 @@ class SessionScanner:
     def get_daily_asset_stats(self) -> dict:
         """Calcula estatísticas de greens e reds por ativo no dia de hoje (ou últimas 24h)."""
         asset_stats: Dict[str, Dict] = {}
-        for aid in config.ASSET_IDS:
+        monitored = list(getattr(self.collector, "monitored_assets", config.ASSET_IDS))
+        for aid in monitored:
             clean = self._normalize_asset(aid)
             disp = f"{clean[:3]}/{clean[3:]}" if len(clean) == 6 else clean
             asset_stats[clean] = {
@@ -1123,13 +1151,13 @@ class SessionScanner:
         self._enabled = False
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# --- Helpers ------------------------------------------------------------------
 def _make_signal_id(sig: ScannerSignal) -> str:
     raw = f"{sig.asset}|{sig.timeframe}|{sig.direction}|{sig.candle_time}"
     return hashlib.sha1(raw.encode()).hexdigest()[:24]
 
 
-# ─── Registro global de scanners por sessão ───────────────────────────────────
+# --- Registro global de scanners por sessão -----------------------------------
 _scanners: Dict[str, SessionScanner] = {}
 _scanners_lock = threading.Lock()
 

@@ -9,10 +9,25 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-import config
-import db
-from collector import Collector
-import signal_scanner
+import sys
+
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, _BRIDGE_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(_BRIDGE_DIR, ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+try:
+    import config
+    import db
+    from collector import Collector
+    import signal_scanner
+except ImportError:
+    from bridge import config
+    from bridge import db
+    from bridge.collector import Collector
+    from bridge import signal_scanner
 
 SESSION_TIMEFRAMES = config.TIMEFRAMES
 SESSION_BACKFILL_HOURS = 14
