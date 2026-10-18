@@ -22,7 +22,7 @@ async function request(path, { params = {}, method = 'GET', body, timeoutMs = 15
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const token = authenticate ? getIQSessionToken() : '';
+  const token = getIQSessionToken();
   if (authenticate && !token) throw new Error('Conecte sua conta IQ Option primeiro.');
   try {
     const response = await fetch(url, {
@@ -34,6 +34,9 @@ async function request(path, { params = {}, method = 'GET', body, timeoutMs = 15
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
+    if (response.status === 401 && token) {
+      setIQSessionToken('');
+    }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const rawDetail = payload?.detail;
@@ -99,6 +102,7 @@ export const sendTelegramDailySummary = (accountType = 'both') =>
     method: 'POST',
     params: { account_type: accountType },
     body: { account_type: accountType },
+    authenticate: false,
   });
 
 export const fetchDashboardStats = ({ startDate, endDate, accountType = 'both' } = {}) =>
@@ -108,10 +112,11 @@ export const fetchDashboardStats = ({ startDate, endDate, accountType = 'both' }
       ...(startDate ? { start_date: startDate } : {}),
       ...(endDate ? { end_date: endDate } : {}),
     },
+    authenticate: false,
   });
 
 export async function fetchIQSession() {
-  return request('/session');
+  return request('/session', { authenticate: false });
 }
 
 export async function disconnectIQAccount() {

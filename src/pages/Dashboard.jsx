@@ -97,49 +97,43 @@ export default function Dashboard() {
     setLoading(true);
     setError('');
     try {
-      if (getIQSessionToken()) {
-        const res = await fetchDashboardStats({
-          startDate: periodPreset === 'all' ? '2024-01-01' : startDate,
-          endDate: endDate,
-          accountType: accountFilter,
-        });
+      const res = await fetchDashboardStats({
+        startDate: periodPreset === 'all' ? '2020-01-01' : startDate,
+        endDate: endDate,
+        accountType: accountFilter,
+      });
+      if (res && typeof res.total_trades === 'number') {
         setData(res);
       } else {
-        // Dados demonstrativos elegantes quando desconectado
-        const synthTimeline = [
-          { date: '14/10', greens: 12, reds: 2, total: 14, winrate: 85.7, profit: 124.5 },
-          { date: '15/10', greens: 18, reds: 3, total: 21, winrate: 85.7, profit: 189.0 },
-          { date: '16/10', greens: 15, reds: 4, total: 19, winrate: 78.9, profit: 142.0 },
-          { date: '17/10', greens: 22, reds: 2, total: 24, winrate: 91.6, profit: 254.0 },
-          { date: '18/10', greens: 19, reds: 3, total: 22, winrate: 86.4, profit: 205.5 },
-        ];
         setData({
           start_date: startDate,
           end_date: endDate,
           account_filter: accountFilter,
-          total_trades: 100,
-          total_greens: 86,
-          total_reds: 14,
-          winrate: 86.0,
-          total_profit: 915.0,
-          timeline: synthTimeline,
-          asset_performance: [
-            { asset: 'EUR/USD', trades: 28, greens: 25, reds: 3, winrate: 89.3, profit: 275.0 },
-            { asset: 'GBP/USD', trades: 22, greens: 19, reds: 3, winrate: 86.4, profit: 210.0 },
-            { asset: 'BTC/USD', trades: 18, greens: 15, reds: 3, winrate: 83.3, profit: 165.0 },
-            { asset: 'USD/JPY', trades: 16, greens: 14, reds: 2, winrate: 87.5, profit: 152.0 },
-            { asset: 'EUR/JPY', trades: 16, greens: 13, reds: 3, winrate: 81.3, profit: 113.0 },
-          ],
-          recent_trades: [
-            { date: '2026-10-18', time: '09:25', account_type: 'REAL', asset: 'EUR/USD', direction: 'CALL', timeframe: 'M1', outcome: 'WIN', profit: 17.4, stake: 20 },
-            { date: '2026-10-18', time: '09:20', account_type: 'REAL', asset: 'BTC/USD', direction: 'PUT', timeframe: 'M1', outcome: 'WIN', profit: 18.0, stake: 20 },
-            { date: '2026-10-18', time: '09:15', account_type: 'PRACTICE', asset: 'GBP/USD', direction: 'CALL', timeframe: 'M5', outcome: 'LOSS', profit: -20.0, stake: 20 },
-            { date: '2026-10-18', time: '09:10', account_type: 'REAL', asset: 'USD/JPY', direction: 'CALL', timeframe: 'M1', outcome: 'WIN', profit: 17.0, stake: 20 },
-          ],
+          total_trades: 0,
+          total_greens: 0,
+          total_reds: 0,
+          winrate: 0.0,
+          total_profit: 0.0,
+          timeline: [],
+          asset_performance: [],
+          recent_trades: [],
         });
       }
     } catch (err) {
-      setError(`Erro ao carregar dados do dashboard: ${err.message}`);
+      console.warn('Falha ao obter dashboard stats:', err);
+      setData((prev) => prev || {
+        start_date: startDate,
+        end_date: endDate,
+        account_filter: accountFilter,
+        total_trades: 0,
+        total_greens: 0,
+        total_reds: 0,
+        winrate: 0.0,
+        total_profit: 0.0,
+        timeline: [],
+        asset_performance: [],
+        recent_trades: [],
+      });
     } finally {
       setLoading(false);
     }
@@ -157,12 +151,6 @@ export default function Dashboard() {
     setNotice('');
     setError('');
     try {
-      if (!getIQSessionToken()) {
-        await new Promise((r) => setTimeout(r, 600));
-        setNotice('✅ [Modo Demonstração] Relatório do dia enviado com sucesso ao seu Telegram!');
-        setTimeout(() => setNotice(''), 4000);
-        return;
-      }
       await sendTelegramDailySummary(type);
       const label = type === 'real' ? 'Conta Real' : type === 'demo' ? 'Conta Demo' : 'Real & Demo (Consolidado)';
       setNotice(`✅ Relatório diário (${label}) enviado com sucesso ao seu canal do Telegram!`);

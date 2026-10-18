@@ -49,13 +49,17 @@ export default function IQConnection() {
       try {
         const session = await fetchIQSession();
         if (!active) return;
+        if (!session || !session.connected) {
+          setConnected(false);
+          liveFeed.disconnect();
+          return;
+        }
         setAccountEmail(session.email);
-        setConnected(Boolean(session.connected));
+        setConnected(true);
         setCurrentAccountType(session.account_type || 'PRACTICE');
         liveFeed.connect();
       } catch (requestError) {
         if (!active) return;
-        setError(requestError.message);
         liveFeed.disconnect();
         setConnected(false);
         return;

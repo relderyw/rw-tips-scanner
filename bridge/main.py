@@ -440,12 +440,21 @@ async def create_session(payload: IQLoginRequest, request: Request):
 
 
 @app.get("/session")
-def current_session(session: UserSession = Depends(require_iq_session)):
+def current_session(session: Optional[UserSession] = Depends(optional_iq_session)):
+    if not session:
+        return {
+            "email": "",
+            "connected": False,
+            "account_type": "PRACTICE",
+            "read_only": True,
+            "authenticated": False,
+        }
     return {
         "email": session.email,
         "connected": bool(session.collector.connected),
         "account_type": session.collector.account_type,
         "read_only": False,
+        "authenticated": True,
     }
 
 
@@ -578,16 +587,17 @@ def get_daily_asset_stats(
 def send_telegram_daily_summary(
     payload: Optional[DailySummaryRequest] = None,
     account_type: Optional[str] = Query(None),
-    session: UserSession = Depends(require_iq_session),
+    session: Optional[UserSession] = Depends(optional_iq_session),
 ):
     """Envia relatório formatado com os ativos que mais deram Green e Red ao Telegram."""
     act_filter = (account_type or (payload.account_type if payload else "both") or "both").lower()
-    scanner = _get_or_create_scanner(session)
+    scanner = _get_or_create_scanner(session) if session else None
     scanner_stats = scanner.get_daily_asset_stats() if scanner else {}
     blacklist = scanner_stats.get("blacklist", []) if scanner_stats else []
 
+    owner_id = session.identity_hash if session else None
     stats = telegram_notifications.get_daily_report_stats(
-        owner_id=session.identity_hash,
+        owner_id=owner_id,
         account_filter=act_filter,
     )
     top_greens = stats.get("top_greens") or scanner_stats.get("top_greens", [])
@@ -596,7 +606,7 @@ def send_telegram_daily_summary(
     total_reds = stats.get("total_reds", 0) or scanner_stats.get("total_reds", 0)
 
     ok = telegram_notifications.send_daily_ranking(
-        owner_id=session.identity_hash,
+        owner_id=owner_id or "global",
         top_greens=top_greens,
         top_reds=top_reds,
         total_greens=total_greens,
@@ -614,11 +624,12 @@ def get_scanner_dashboard_stats(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     account_type: str = Query("both"),
-    session: UserSession = Depends(require_iq_session),
+    session: Optional[UserSession] = Depends(optional_iq_session),
 ):
     """Retorna dados analíticos completos para o Dashboard da plataforma com filtro de datas."""
+    owner_id = session.identity_hash if session else None
     return telegram_notifications.get_dashboard_analytics(
-        owner_id=session.identity_hash,
+        owner_id=owner_id,
         start_date=start_date,
         end_date=end_date,
         account_filter=account_type.lower(),

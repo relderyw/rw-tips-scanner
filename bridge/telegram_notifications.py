@@ -83,6 +83,40 @@ def _connect() -> sqlite3.Connection:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_ops_owner_date ON telegram_daily_operations(owner_id, date_str)"
     )
+    # Backfill automático a partir de telegram_signals caso telegram_daily_operations esteja vazio
+    try:
+        cnt_row = connection.execute("SELECT COUNT(*) FROM telegram_daily_operations").fetchone()
+        cnt = cnt_row[0] if cnt_row else 0
+        if cnt == 0:
+            signals = connection.execute(
+                """SELECT signal_id, owner_id, outcome, created_at, message_text
+                   FROM telegram_signals
+                   WHERE outcome IN ('WIN', 'LOSS')"""
+            ).fetchall()
+            for sig in signals:
+                s_id, o_id, out, c_at, msg = sig
+                parts = (s_id or "").split("|")
+                ast = parts[0] if parts and parts[0] else "EURUSD"
+                tf = parts[2] if len(parts) >= 3 else "M1"
+                direction = "CALL"
+                if "PUT" in (msg or ""):
+                    direction = "PUT"
+                elif "CALL" in (msg or ""):
+                    direction = "CALL"
+                elif len(parts) >= 4 and parts[3] in ("CALL", "PUT"):
+                    direction = parts[3]
+
+                date_s = time.strftime("%Y-%m-%d", time.localtime(c_at)) if c_at else time.strftime("%Y-%m-%d")
+                stake_val = 2.0
+                profit_val = 1.74 if out == "WIN" else -2.0
+                connection.execute(
+                    """INSERT INTO telegram_daily_operations
+                       (owner_id, date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at)
+                       VALUES (?, ?, 'PRACTICE', ?, ?, ?, ?, ?, ?, ?)""",
+                    (o_id or "global", date_s, ast, direction, tf, out, profit_val, stake_val, int(c_at or time.time())),
+                )
+    except Exception as e_backfill:
+        log.warning("[Telegram] Falha no backfill de operacoes: %s", e_backfill)
     return connection
 
 
@@ -404,24 +438,32 @@ def record_operation(
 
 
 def get_daily_report_stats(
-    owner_id: str,
+    owner_id: Optional[str] = None,
     date_str: Optional[str] = None,
     account_filter: str = "both",  # "real", "demo", "both"
 ) -> dict:
     """Retorna estatísticas detalhadas das operações do dia para o Telegram e painel."""
     if not date_str:
         date_str = time.strftime("%Y-%m-%d")
-    hashed_owner = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()
+    hashed_owner = hashlib.sha256(owner_id.encode("utf-8")).hexdigest() if owner_id else None
 
     with _db_lock:
         with _connection() as connection:
-            # Todas as operações do dia para o usuário
-            rows = connection.execute(
-                """SELECT account_type, asset, outcome, profit, stake
-                   FROM telegram_daily_operations
-                   WHERE owner_id=? AND date_str=?""",
-                (hashed_owner, date_str),
-            ).fetchall()
+            rows = []
+            if hashed_owner:
+                rows = connection.execute(
+                    """SELECT account_type, asset, outcome, profit, stake
+                       FROM telegram_daily_operations
+                       WHERE (owner_id=? OR owner_id='global' OR owner_id='') AND date_str=?""",
+                    (hashed_owner, date_str),
+                ).fetchall()
+            if not rows:
+                rows = connection.execute(
+                    """SELECT account_type, asset, outcome, profit, stake
+                       FROM telegram_daily_operations
+                       WHERE date_str=?""",
+                    (date_str,),
+                ).fetchall()
 
     real_greens = 0
     real_reds = 0
@@ -742,31 +784,43 @@ def send_daily_ranking(
 
 
 def get_dashboard_analytics(
-    owner_id: str,
+    owner_id: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_filter: str = "both",
 ) -> dict:
     """Retorna dados analíticos completos para o Dashboard da plataforma com filtro de datas."""
-    hashed_owner = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()
+    hashed_owner = hashlib.sha256(owner_id.encode("utf-8")).hexdigest() if owner_id else None
     today_str = time.strftime("%Y-%m-%d")
     s_date = start_date or today_str
     e_date = end_date or today_str
 
     with _db_lock:
         with _connection() as connection:
-            query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
-                       FROM telegram_daily_operations
-                       WHERE owner_id=? AND date_str >= ? AND date_str <= ?"""
-            params = [hashed_owner, s_date, e_date]
+            rows = []
+            if hashed_owner:
+                query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
+                           FROM telegram_daily_operations
+                           WHERE (owner_id=? OR owner_id='global' OR owner_id='') AND date_str >= ? AND date_str <= ?"""
+                params = [hashed_owner, s_date, e_date]
+                if account_filter == "real":
+                    query += " AND account_type='REAL'"
+                elif account_filter in ("demo", "practice"):
+                    query += " AND account_type='PRACTICE'"
+                query += " ORDER BY created_at ASC"
+                rows = connection.execute(query, params).fetchall()
 
-            if account_filter == "real":
-                query += " AND account_type='REAL'"
-            elif account_filter in ("demo", "practice"):
-                query += " AND account_type='PRACTICE'"
-
-            query += " ORDER BY created_at ASC"
-            rows = connection.execute(query, params).fetchall()
+            if not rows:
+                query = """SELECT date_str, account_type, asset, direction, timeframe, outcome, profit, stake, created_at
+                           FROM telegram_daily_operations
+                           WHERE date_str >= ? AND date_str <= ?"""
+                params = [s_date, e_date]
+                if account_filter == "real":
+                    query += " AND account_type='REAL'"
+                elif account_filter in ("demo", "practice"):
+                    query += " AND account_type='PRACTICE'"
+                query += " ORDER BY created_at ASC"
+                rows = connection.execute(query, params).fetchall()
 
     total_greens = 0
     total_reds = 0

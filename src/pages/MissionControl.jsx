@@ -619,6 +619,10 @@ export default function MissionControl() {
       try {
         const session = await fetchIQSession();
         if (!alive) return;
+        if (!session || !session.connected) {
+          setConnected(false);
+          return;
+        }
         // Se já estava inicializado na sessão anterior (troca de aba), mantém dados e não repete animação do zero
         if (_mcPersisted.initialized && _mcPersisted.topAssets.length > 0) {
           setConnected(true);
