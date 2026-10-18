@@ -35,25 +35,26 @@ export default function AccountEntries() {
   const load = useCallback(async () => {
     setBusy(true);
     setError('');
-    const [accountResult, historyResult] = await Promise.allSettled([
-      fetchIQAccount(),
-      fetchIQPositions(100),
-    ]);
     const failures = [];
-    if (accountResult.status === 'fulfilled') {
-      setAccount(accountResult.value);
-    } else {
+    try {
+      const acc = await fetchIQAccount();
+      setAccount(acc);
+    } catch (err) {
       setAccount(null);
-      failures.push(`Saldo: ${accountResult.reason.message || 'não disponível'}`);
+      failures.push(`Saldo: ${err.message || 'não disponível'}`);
     }
-    if (historyResult.status === 'fulfilled' && Array.isArray(historyResult.value)) {
-      setPositions(historyResult.value);
-    } else {
-      failures.push(historyResult.status === 'rejected'
-        ? `Histórico: ${historyResult.reason.message || 'não disponível'}`
-        : 'A ponte retornou um histórico inválido.');
+
+    try {
+      const pos = await fetchIQPositions(100);
+      setPositions(Array.isArray(pos) ? pos : []);
+    } catch (err) {
+      setPositions([]);
+      failures.push(`Histórico: ${err.message || 'não disponível'}`);
     }
-    setError(failures.join(' · '));
+
+    if (failures.length > 0) {
+      setError(failures.join(' · '));
+    }
     setBusy(false);
   }, []);
 

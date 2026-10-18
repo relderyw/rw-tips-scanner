@@ -17,7 +17,7 @@ function setIQSessionToken(token) {
   else sessionStorage.removeItem(SESSION_KEY);
 }
 
-async function request(path, { params = {}, method = 'GET', body, timeoutMs = 15000, authenticate = true } = {}) {
+async function request(path, { params = {}, method = 'GET', body, timeoutMs = 40000, authenticate = true } = {}) {
   const url = new URL(BASE + path);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   const controller = new AbortController();
@@ -50,6 +50,11 @@ async function request(path, { params = {}, method = 'GET', body, timeoutMs = 15
       throw new Error(detail);
     }
     return payload;
+  } catch (err) {
+    if (err.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort')) {
+      throw new Error('Tempo limite excedido ao consultar a IQ Option.');
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }

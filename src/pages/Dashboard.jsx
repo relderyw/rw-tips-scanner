@@ -15,6 +15,7 @@ import {
   ArrowUpRight,
   ShieldAlert,
   Zap,
+  Info,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -45,9 +46,9 @@ const getPastDateStr = (daysAgo) => {
 };
 
 export default function Dashboard() {
-  // Filtros
-  const [periodPreset, setPeriodPreset] = useState('today'); // 'today' | 'yesterday' | '7d' | '30d' | 'all' | 'custom'
-  const [startDate, setStartDate] = useState(getTodayStr());
+  // Filtros (por padrão inicia com todo o histórico consolidado)
+  const [periodPreset, setPeriodPreset] = useState('all'); // 'today' | 'yesterday' | '7d' | '30d' | 'all' | 'custom'
+  const [startDate, setStartDate] = useState('2020-01-01');
   const [endDate, setEndDate] = useState(getTodayStr());
   const [accountFilter, setAccountFilter] = useState('both'); // 'both' | 'real' | 'demo'
 
@@ -78,7 +79,7 @@ export default function Dashboard() {
       setStartDate(getPastDateStr(30));
       setEndDate(today);
     } else if (preset === 'all') {
-      setStartDate('2024-01-01');
+      setStartDate('2020-01-01');
       setEndDate(today);
     }
   };
@@ -364,6 +365,26 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Dica amigável caso o período filtrado (ex: Hoje) ainda não tenha operações no dia */}
+      {data?.total_trades === 0 && (data?.all_time_trades || 0) > 0 && (
+        <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border border-neon/30 bg-neon/[0.06] p-4 text-xs font-semibold text-zinc-300">
+          <div className="flex items-center gap-2">
+            <Info className="h-4 w-4 text-neon shrink-0" />
+            <span>
+              Nenhuma operação registrada no período selecionado. Existem <b>{data.all_time_trades} operações</b> consolidadas no histórico total.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => handlePresetChange('all')}
+            className="btn-primary text-xs py-1.5 px-3 shrink-0 flex items-center gap-1.5"
+          >
+            <Calendar className="h-3.5 w-3.5" />
+            Ver Todo o Histórico
+          </button>
+        </div>
+      )}
 
       {/* CARDS DE MÉTRICAS PRINCIPAIS */}
       <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">

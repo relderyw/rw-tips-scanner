@@ -414,43 +414,56 @@ class Collector(threading.Thread):
         if not self.connected or client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
 
-        with self._account_data_lock:
-            try:
-                balance = client.get_balance()
-                currency = getattr(client.appstate, "currency", "USD") or "USD"
-            except Exception:
-                balances = client.account_manager.get_balances()
-                account_id = client.appstate.balance_id
-                account = next(
-                    (item for item in balances if item.get("id") == account_id),
-                    None,
-                )
-                if account is None:
-                    raise LookupError("A IQ Option não retornou o saldo da conta ativa.")
-                balance = account.get("amount", 0)
-                currency = account.get("currency", "USD")
+        balance = None
+        currency = getattr(client.appstate, "currency", "USD") or "USD"
+        try:
+            with self._account_data_lock:
+                try:
+                    balance = client.get_balance()
+                except Exception:
+                    pass
+                if balance is None:
+                    balances = client.account_manager.get_balances(timeout=3)
+                    account_id = client.appstate.balance_id
+                    account = next((item for item in balances if item.get("id") == account_id), None)
+                    if account:
+                        balance = account.get("amount", 0)
+                        currency = account.get("currency", currency)
+        except Exception as e:
+            log.warning("Aviso ao ler saldo via API IQ: %s", e)
 
-            return {
-                "balance": balance,
-                "currency": currency,
-                "account_type": self.account_type,
-                "read_only": False,
-            }
+        if balance is None:
+            balance = getattr(client.appstate, "balance", 0.0) or 0.0
+
+        return {
+            "balance": float(balance or 0.0),
+            "currency": currency or "USD",
+            "account_type": self.account_type,
+            "read_only": False,
+        }
 
     def position_history(self, limit: int) -> list:
         client = self.client
         if not self.connected or client is None:
             raise ConnectionError("A conexão com a IQ Option está indisponível.")
 
-        with self._account_data_lock:
-            return client.get_position_history_by_page(
-                [
-                    "marginal-forex", "marginal-cfd", "marginal-crypto",
-                    "digital-option", "blitz-option", "turbo-option", "binary-option",
-                ],
-                limit=limit,
-                offset=0,
-            )
+        try:
+            with self._account_data_lock:
+                res = client.get_position_history_by_page(
+                    [
+                        "marginal-forex", "marginal-cfd", "marginal-crypto",
+                        "digital-option", "blitz-option", "turbo-option", "binary-option",
+                    ],
+                    limit=min(limit, 100),
+                    offset=0,
+                )
+                return res if isinstance(res, list) else []
+        except TimeoutError:
+            log.warning("Timeout ao buscar histórico de posições na IQ Option; retornando lista vazia")
+            return []
+        except Exception as e:
+            log.warning("Erro ao buscar histórico de posições na IQ: %s", e)
+            return []
 
     # ===================================================================
     # Resolução de nomes de ativos

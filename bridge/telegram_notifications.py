@@ -900,6 +900,16 @@ def get_dashboard_analytics(
     # Últimos primeiro
     recent_trades.reverse()
 
+    all_time_trades = total_ops
+    try:
+        with _db_lock:
+            with _connection() as connection:
+                cnt_row = connection.execute("SELECT COUNT(*) FROM telegram_daily_operations").fetchone()
+                if cnt_row:
+                    all_time_trades = cnt_row[0]
+    except Exception:
+        pass
+
     return {
         "start_date": s_date,
         "end_date": e_date,
@@ -912,6 +922,7 @@ def get_dashboard_analytics(
         "timeline": timeline,
         "asset_performance": asset_performance,
         "recent_trades": recent_trades[:100],
+        "all_time_trades": all_time_trades,
     }
 
 
