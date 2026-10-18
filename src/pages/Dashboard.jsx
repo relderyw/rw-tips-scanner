@@ -103,38 +103,25 @@ export default function Dashboard() {
         endDate: endDate,
         accountType: accountFilter,
       });
-      if (res && typeof res.total_trades === 'number') {
+      if (
+        res &&
+        typeof res.total_trades === 'number' &&
+        typeof res.total_greens === 'number' &&
+        typeof res.total_reds === 'number' &&
+        typeof res.winrate === 'number' &&
+        typeof res.total_profit === 'number' &&
+        Array.isArray(res.timeline) &&
+        Array.isArray(res.asset_performance) &&
+        Array.isArray(res.recent_trades)
+      ) {
         setData(res);
       } else {
-        setData({
-          start_date: startDate,
-          end_date: endDate,
-          account_filter: accountFilter,
-          total_trades: 0,
-          total_greens: 0,
-          total_reds: 0,
-          winrate: 0.0,
-          total_profit: 0.0,
-          timeline: [],
-          asset_performance: [],
-          recent_trades: [],
-        });
+        throw new TypeError('A ponte retornou dados inválidos para o Dashboard.');
       }
     } catch (err) {
       console.warn('Falha ao obter dashboard stats:', err);
-      setData((prev) => prev || {
-        start_date: startDate,
-        end_date: endDate,
-        account_filter: accountFilter,
-        total_trades: 0,
-        total_greens: 0,
-        total_reds: 0,
-        winrate: 0.0,
-        total_profit: 0.0,
-        timeline: [],
-        asset_performance: [],
-        recent_trades: [],
-      });
+      setData(null);
+      setError(`Falha ao carregar dados do Dashboard: ${err?.message || 'erro desconhecido.'}`);
     } finally {
       setLoading(false);
     }
@@ -144,6 +131,11 @@ export default function Dashboard() {
     loadStats();
     loadBlacklist();
   }, [loadStats, loadBlacklist]);
+
+  const showMetric = (value) => {
+    if (data) return value;
+    return loading ? '...' : '—';
+  };
 
   // Enviar resumo para o Telegram com escolha da modalidade
   const handleSendTelegramSummary = async (type = 'both') => {
@@ -393,7 +385,7 @@ export default function Dashboard() {
             <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Total Operações</span>
             <Target className="h-4 w-4 text-zinc-400" />
           </div>
-          <div className="text-2xl font-black text-white font-mono">{data?.total_trades || 0}</div>
+          <div className="text-2xl font-black text-white font-mono">{showMetric(data?.total_trades ?? 0)}</div>
           <span className="text-[10px] text-zinc-500">no período filtrado</span>
         </div>
 
@@ -402,7 +394,7 @@ export default function Dashboard() {
             <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-400">Vitórias (Greens)</span>
             <TrendingUp className="h-4 w-4 text-emerald-400" />
           </div>
-          <div className="text-2xl font-black text-emerald-400 font-mono">{data?.total_greens || 0}</div>
+          <div className="text-2xl font-black text-emerald-400 font-mono">{showMetric(data?.total_greens ?? 0)}</div>
           <span className="text-[10px] text-emerald-500/80">operações vencedoras</span>
         </div>
 
@@ -411,7 +403,7 @@ export default function Dashboard() {
             <span className="text-[11px] font-bold uppercase tracking-wider text-red-400">Derrotas (Reds)</span>
             <TrendingDown className="h-4 w-4 text-red-400" />
           </div>
-          <div className="text-2xl font-black text-red-400 font-mono">{data?.total_reds || 0}</div>
+          <div className="text-2xl font-black text-red-400 font-mono">{showMetric(data?.total_reds ?? 0)}</div>
           <span className="text-[10px] text-red-500/80">operações com loss</span>
         </div>
 
@@ -420,7 +412,9 @@ export default function Dashboard() {
             <span className="text-[11px] font-bold uppercase tracking-wider text-neon">Assertividade</span>
             <Zap className="h-4 w-4 text-neon" />
           </div>
-          <div className="text-2xl font-black text-neon font-mono">{data?.winrate || 0}%</div>
+          <div className="text-2xl font-black text-neon font-mono">
+            {data ? `${data.winrate || 0}%` : showMetric(null)}
+          </div>
           <span className="text-[10px] text-zinc-500">taxa de acerto global</span>
         </div>
 
@@ -431,10 +425,14 @@ export default function Dashboard() {
           </div>
           <div
             className={`text-2xl font-black font-mono ${
-              (data?.total_profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+              !data ? 'text-zinc-500' : (data.total_profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
             }`}
           >
-            {(data?.total_profit || 0) >= 0 ? `+$${(data?.total_profit || 0).toFixed(2)}` : `-$${Math.abs(data?.total_profit || 0).toFixed(2)}`}
+            {!data
+              ? showMetric(null)
+              : (data.total_profit || 0) >= 0
+                ? `+$${(data.total_profit || 0).toFixed(2)}`
+                : `-$${Math.abs(data.total_profit || 0).toFixed(2)}`}
           </div>
           <span className="text-[10px] text-zinc-500">estimativa P&L</span>
         </div>
@@ -487,10 +485,16 @@ export default function Dashboard() {
               <h3 className="text-sm font-bold text-white">Desempenho por Ativo no Período</h3>
               <p className="text-xs text-zinc-400">Assertividade calculada para cada paridade operada.</p>
             </div>
-            <span className="text-xs text-zinc-500 font-mono">{data?.asset_performance?.length || 0} ativos</span>
+            <span className="text-xs text-zinc-500 font-mono">
+              {data ? `${data.asset_performance?.length || 0} ativos` : `${showMetric(null)} ativos`}
+            </span>
           </div>
 
-          {(!data?.asset_performance || data.asset_performance.length === 0) ? (
+          {!data ? (
+            <div className="py-8 text-center text-xs text-zinc-500">
+              {loading ? 'Carregando operações...' : 'Não foi possível carregar as operações.'}
+            </div>
+          ) : data.asset_performance.length === 0 ? (
             <div className="py-8 text-center text-xs text-zinc-500">
               Nenhuma operação registrada para os filtros selecionados.
             </div>
