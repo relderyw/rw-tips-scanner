@@ -146,21 +146,56 @@ export const updateTelegramSignalResult = (signal_id, outcome) =>
   request('/telegram/signal/result', { method: 'PUT', body: { signal_id, outcome }, timeoutMs: 12000 });
 export const fetchTelegramStatus = () => request('/telegram/status');
 export const fetchTelegramStats = () => request('/telegram/stats');
-export async function createAdminUser({ email, password, days }) {
-  const token = await getFirebaseIdToken();
-  const response = await fetch(`${BASE}/admin/users`, {
-    method: 'POST',
+function adminErrorMessage(payload, fallback) {
+  const rawDetail = payload?.detail;
+  if (Array.isArray(rawDetail)) {
+    return rawDetail.map((item) => item?.msg || JSON.stringify(item)).join('; ');
+  }
+  if (typeof rawDetail === 'string' && rawDetail.trim()) return rawDetail;
+  if (rawDetail) return JSON.stringify(rawDetail);
+  return fallback;
+}
+
+async function firebaseRequest(path, { method = 'GET', body, token } = {}) {
+  const response = await fetch(`${BASE}${path}`, {
+    method,
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
-    body: JSON.stringify({ email, password, days }),
+    body: body ? JSON.stringify(body) : undefined,
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload?.detail || `HTTP ${response.status} ao criar usuário.`);
+    throw new Error(adminErrorMessage(payload, `HTTP ${response.status} em ${path}`));
   }
   return payload;
 }
+
+async function adminRequest(path, options = {}) {
+  const token = await getFirebaseIdToken();
+  return firebaseRequest(path, { ...options, token });
+}
+
+export const listAdminUsers = () => adminRequest('/admin/users');
+export const createAdminUser = ({ email, password, days }) =>
+  adminRequest('/admin/users', { method: 'POST', body: { email, password, days } });
+export const updateAdminUser = (uid, { email, password }) =>
+  adminRequest(`/admin/users/${encodeURIComponent(uid)}`, {
+    method: 'PATCH',
+    body: {
+      ...(email ? { email } : {}),
+      ...(password ? { password } : {}),
+    },
+  });
+export const deleteAdminUser = (uid) =>
+  adminRequest(`/admin/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
+export const renewAdminUser = (uid, days) =>
+  adminRequest(`/admin/users/${encodeURIComponent(uid)}/renew`, {
+    method: 'POST',
+    body: { days },
+  });
+export const registerAppSession = (idToken) =>
+  firebaseRequest('/auth/session', { method: 'POST', token: idToken });
 export const fetchBridgePayouts = () => request('/payouts');
 export const fetchBridgeHealth = () => request('/app-health').catch(() => request('/health'));

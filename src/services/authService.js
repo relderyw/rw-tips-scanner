@@ -29,12 +29,31 @@ const firebaseAuth = missingConfig.length === 0
   : null;
 const adminEmail = (import.meta.env.VITE_FIREBASE_ADMIN_EMAIL || '').trim().toLowerCase();
 const ACCESS_EXPIRED_MESSAGE = 'Este acesso não está ativo. Entre em contato com o administrador.';
+const SESSION_REPLACED_MESSAGE = 'Sua conta foi acessada em outro dispositivo. Esta sessão foi encerrada.';
+const APP_SESSION_KEY = 'rwtips_app_session_id';
 
 function requireAuth() {
   if (!firebaseAuth) {
     throw new Error(`Configuração do Firebase ausente: ${missingConfig.join(', ')}. Confira o arquivo .env e reinicie o painel.`);
   }
   return firebaseAuth;
+}
+
+function readLocalSessionId() {
+  try {
+    return sessionStorage.getItem(APP_SESSION_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeLocalSessionId(sessionId) {
+  try {
+    if (sessionId) sessionStorage.setItem(APP_SESSION_KEY, sessionId);
+    else sessionStorage.removeItem(APP_SESSION_KEY);
+  } catch {
+    /* ignore quota / private-mode failures */
+  }
 }
 
 function toAppUser(user, claims = {}) {
@@ -71,24 +90,103 @@ async function runAuth(operation) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let sessionBootstrap = null;
+let lastRegisteredAt = 0;
+
+async function waitForSessionClaim(user, sessionId) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await user.getIdToken(true);
+    const token = await getIdTokenResult(user);
+    if (token.claims.session_id === sessionId) return token;
+    await sleep(400);
+  }
+  return getIdTokenResult(user);
+}
+
+async function establishRemoteSession(user) {
+  const { registerAppSession } = await import('./bridgeApi.js');
+  const idToken = await user.getIdToken();
+  const result = await registerAppSession(idToken);
+  writeLocalSessionId(result.session_id);
+  lastRegisteredAt = Date.now();
+  return waitForSessionClaim(user, result.session_id);
+}
+
+async function ensureUniqueSession(user) {
+  if (readLocalSessionId()) return;
+  if (!sessionBootstrap) {
+    sessionBootstrap = establishRemoteSession(user)
+      .catch((error) => {
+        writeLocalSessionId('');
+        const message = String(error.message || '');
+        if (
+          message.includes('Firebase Admin')
+          || message.includes('credenciais')
+          || message.includes('503')
+        ) {
+          console.warn('[auth] login único indisponível:', message);
+          return null;
+        }
+        throw error;
+      })
+      .finally(() => {
+        sessionBootstrap = null;
+      });
+  }
+  await sessionBootstrap;
+}
+
 async function validateSignedInUser(user) {
-  const token = await getIdTokenResult(user);
-  const appUser = toAppUser(user, token.claims);
+  let token = await getIdTokenResult(user);
+  let appUser = toAppUser(user, token.claims);
   if (!appUser.isAdmin && (!appUser.expiresAt || appUser.expiresAt <= Date.now())) {
+    writeLocalSessionId('');
     await signOut(requireAuth());
     throw new Error(ACCESS_EXPIRED_MESSAGE);
+  }
+
+  await ensureUniqueSession(user);
+  token = await getIdTokenResult(user);
+  appUser = toAppUser(user, token.claims);
+  if (!appUser.isAdmin && (!appUser.expiresAt || appUser.expiresAt <= Date.now())) {
+    writeLocalSessionId('');
+    await signOut(requireAuth());
+    throw new Error(ACCESS_EXPIRED_MESSAGE);
+  }
+
+  const localSession = readLocalSessionId();
+  const claimedSession = token.claims.session_id;
+  const recentlyRegistered = Date.now() - lastRegisteredAt < 15000;
+  if (localSession && claimedSession && claimedSession !== localSession && !recentlyRegistered) {
+    writeLocalSessionId('');
+    await signOut(requireAuth());
+    throw new Error(SESSION_REPLACED_MESSAGE);
   }
   return appUser;
 }
 
 export async function login(email, password) {
+  writeLocalSessionId('');
+  sessionBootstrap = null;
   const credential = await runAuth((auth) =>
     signInWithEmailAndPassword(auth, email.trim(), password));
   return validateSignedInUser(credential.user);
 }
 
 export async function logout() {
+  writeLocalSessionId('');
   await runAuth((auth) => signOut(auth));
+}
+
+export async function refreshSessionClaims() {
+  const user = requireAuth().currentUser;
+  if (!user) return null;
+  await user.getIdToken(true);
+  return validateSignedInUser(user);
 }
 
 export function onAuthChange(listener) {
@@ -110,7 +208,7 @@ export function onAuthChange(listener) {
         if (currentGeneration === generation) listener(appUser);
       } catch (error) {
         if (currentGeneration === generation) {
-          if (error.message !== ACCESS_EXPIRED_MESSAGE) {
+          if (error.message !== ACCESS_EXPIRED_MESSAGE && error.message !== SESSION_REPLACED_MESSAGE) {
             console.error('[auth] Firebase session validation failed:', error);
           }
           listener(null);

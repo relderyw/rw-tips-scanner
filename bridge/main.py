@@ -355,7 +355,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=_cors_allow_creds,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
 
@@ -947,22 +947,89 @@ class AdminUserRequest(BaseModel):
     days: int = Field(ge=1, le=3650)
 
 
+class AdminUserUpdateRequest(BaseModel):
+    email: Optional[str] = Field(default=None, min_length=3, max_length=254)
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+
+
+class AdminUserRenewRequest(BaseModel):
+    days: int = Field(ge=1, le=3650)
+
+
+def _require_admin_http(request: Request, cred: Optional[HTTPAuthorizationCredentials]):
+    if cred is None:
+        raise HTTPException(status_code=401, detail="Autentique-se para continuar.")
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(f"admin_user_ip:{client_ip}", max_attempts=20, window_seconds=60.0)
+    return admin_auth.require_admin(cred.credentials)
+
+
+@app.get("/admin/users")
+def list_admin_users(
+    request: Request,
+    cred: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    _require_admin_http(request, cred)
+    return admin_auth.list_limited_users()
+
+
 @app.post("/admin/users", status_code=201)
 def create_admin_user(
     payload: AdminUserRequest,
     request: Request,
     cred: HTTPAuthorizationCredentials = Depends(bearer),
 ):
-    if cred is None:
-        raise HTTPException(status_code=401, detail="Autentique-se para continuar.")
-    client_ip = request.client.host if request.client else "unknown"
-    check_rate_limit(f"admin_user_ip:{client_ip}", max_attempts=10, window_seconds=60.0)
-    admin_auth.require_admin(cred.credentials)
+    _require_admin_http(request, cred)
     return admin_auth.create_limited_user(
         payload.email,
         payload.password,
         payload.days,
     )
+
+
+@app.patch("/admin/users/{uid}")
+def update_admin_user(
+    uid: str,
+    payload: AdminUserUpdateRequest,
+    request: Request,
+    cred: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    _require_admin_http(request, cred)
+    return admin_auth.update_limited_user(uid, email=payload.email, password=payload.password)
+
+
+@app.delete("/admin/users/{uid}")
+def delete_admin_user(
+    uid: str,
+    request: Request,
+    cred: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    _require_admin_http(request, cred)
+    return admin_auth.delete_limited_user(uid)
+
+
+@app.post("/admin/users/{uid}/renew")
+def renew_admin_user(
+    uid: str,
+    payload: AdminUserRenewRequest,
+    request: Request,
+    cred: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    _require_admin_http(request, cred)
+    return admin_auth.renew_limited_user(uid, payload.days)
+
+
+@app.post("/auth/session")
+def start_auth_session(
+    request: Request,
+    cred: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    if cred is None:
+        raise HTTPException(status_code=401, detail="Autentique-se para continuar.")
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(f"auth_session_ip:{client_ip}", max_attempts=30, window_seconds=60.0)
+    decoded = admin_auth.verify_firebase_token(cred.credentials)
+    return admin_auth.start_user_session(decoded["uid"])
 
 
 # ===================================================================

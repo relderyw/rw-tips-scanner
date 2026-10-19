@@ -11,11 +11,17 @@ export function AuthProvider({ children }) {
     setAuthReady(true);
   }), []);
   useEffect(() => {
-    if (!user || user.isAdmin || !user.expiresAt) return undefined;
+    if (!user) return undefined;
     const timer = setInterval(() => {
-      if (Date.now() >= user.expiresAt) {
+      if (!user.isAdmin && user.expiresAt && Date.now() >= user.expiresAt) {
         auth.logout().catch((error) => console.error('[auth] failed to end expired session:', error));
+        return;
       }
+      auth.refreshSessionClaims().catch((error) => {
+        if (error?.message) {
+          console.warn('[auth] sessão atualizada ou encerrada:', error.message);
+        }
+      });
     }, 15000);
     return () => clearInterval(timer);
   }, [user]);

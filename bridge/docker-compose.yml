@@ -12,6 +12,7 @@ services:
     # SQLite (data/bridge.db) fica montado fora do container para sobreviver a recriações.
     volumes:
       - ./data:/app/bridge/data
+      # Se o JSON do Firebase Admin estiver em bridge/data/, a ponte encontra automaticamente.
     restart: unless-stopped
     # Segurança: roda como usuário não-root (se a imagem permitir); default é root no slim.
     # Descomente abaixo se quiser habilitar e garantir que ./data no host seja gravável.
